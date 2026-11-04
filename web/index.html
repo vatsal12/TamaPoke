@@ -51,6 +51,14 @@
       <span slot="unsupported">Browser not supported (use Chrome/Edge).</span>
       <span slot="not-allowed">Needs HTTPS.</span>
     </esp-web-install-button>
+    <p>Got the <b>ESP32-S3-Touch-AMOLED-1.75C</b> (aluminium case, no microSD slot)? Use this
+       one instead: all the sprites are built into the firmware, so <b>skip step 2</b>. It has
+       no clock chip, so set the time on the screen it shows when it starts.</p>
+    <esp-web-install-button manifest="manifest-175c.json">
+      <button slot="activate">⚡ Install TamaPoke for the 1.75C</button>
+      <span slot="unsupported">Browser not supported (use Chrome/Edge).</span>
+      <span slot="not-allowed">Needs HTTPS.</span>
+    </esp-web-install-button>
     <p class="note">🔄 <b>Updating to a new version? Install <u>without</u> erasing</b> to keep
        your Pokémon — the save lives in flash and the sprites on the microSD, so a normal
        install keeps both. Only a full <b>Erase</b> wipes your saved pet (the SD sprites

@@ -1,34 +1,94 @@
 #include "sdmon.h"
 #include "pin_config.h"
+#if TAMAPOKE_HAS_SD
 #include <FS.h>
 #include <SD_MMC.h>
+#endif
+#if TAMAPOKE_FLASH_SPRITES
+#include "flashsprites.h"
+#include "miniz.h"  // tinfl de la ROM del ESP32-S3 (sin libreria extra)
+#endif
 
+// true cuando hay de donde sacar sprites: la SD montada o, en placas sin SD,
+// el paquete de sprites dentro del firmware
 bool sdReady = false;
 bool sdDirty = false;
 SdThumbs thumbs;
+
+#if TAMAPOKE_FLASH_SPRITES
+static const FlashSprite *flashFind(const char *path) {
+  if (strncmp(path, "/mons/", 6) == 0) path += 6;
+  for (uint16_t i = 0; i < FLASH_SPRITES_COUNT; i++)
+    if (strcmp(FLASH_SPRITES[i].name, path) == 0) return &FLASH_SPRITES[i];
+  return nullptr;
+}
+
+// descomprime un stream zlib entero de flash a dst. El estado del descompresor
+// (~11 KB) va al heap: en la pila del loop (8 KB) no cabe.
+static bool flashInflate(const FlashSprite *e, uint8_t *dst) {
+  tinfl_decompressor *d = (tinfl_decompressor *)malloc(sizeof(tinfl_decompressor));
+  if (!d) return false;
+  tinfl_init(d);
+  size_t inLen = e->zlen, outLen = e->rawLen;
+  tinfl_status st = tinfl_decompress(d, FLASH_SPRITES_DATA + e->offset, &inLen, dst, dst, &outLen,
+                                     TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  free(d);
+  return st == TINFL_STATUS_DONE && outLen == e->rawLen;
+}
+#endif
+
+// Lee un fichero de sprites entero a PSRAM (de la SD o del firmware). Devuelve
+// nullptr si no existe, no cabe en [minSize, maxSize] o falla la lectura; el
+// llamador libera con free().
+static uint8_t *readSpriteFile(const char *path, uint32_t minSize, uint32_t maxSize, uint32_t *outSize) {
+  if (!sdReady) return nullptr;
+#if TAMAPOKE_FLASH_SPRITES
+  const FlashSprite *e = flashFind(path);
+  if (!e || e->rawLen < minSize || e->rawLen > maxSize) return nullptr;
+  uint8_t *buf = (uint8_t *)ps_malloc(e->rawLen);
+  if (!buf) return nullptr;
+  if (!flashInflate(e, buf)) {
+    Serial.printf("%s: fallo al descomprimir\n", path);
+    free(buf);
+    return nullptr;
+  }
+  *outSize = e->rawLen;
+  return buf;
+#else
+  File f = SD_MMC.open(path, FILE_READ);
+  if (!f) return nullptr;
+  uint32_t size = f.size();
+  if (size < minSize || size > maxSize) { f.close(); return nullptr; }
+  uint8_t *buf = (uint8_t *)ps_malloc(size);
+  if (!buf || f.read(buf, size) != size) {
+    if (buf) free(buf);
+    f.close();
+    return nullptr;
+  }
+  f.close();
+  *outSize = size;
+  return buf;
+#endif
+}
 
 bool PmdMon::load(uint8_t dexNum, bool shiny) {
   unload();
   if (!sdReady) return false;
 
   char path[28];
+  uint32_t size = 0;
   snprintf(path, sizeof(path), "/mons/p%s%03u.bin", shiny ? "s" : "", dexNum);
-  File f = SD_MMC.open(path, FILE_READ);
-  if (!f && shiny) {  // sin shiny PMD: usa el normal
+  blob = readSpriteFile(path, 7, 3UL * 1024 * 1024, &size);
+  if (!blob && shiny) {  // sin shiny PMD: usa el normal
     snprintf(path, sizeof(path), "/mons/p%03u.bin", dexNum);
-    f = SD_MMC.open(path, FILE_READ);
+    blob = readSpriteFile(path, 7, 3UL * 1024 * 1024, &size);
   }
-  if (!f) return false;
-
-  uint32_t size = f.size();
-  if (size < 7 || size > 3UL * 1024 * 1024) { f.close(); return false; }
-  blob = (uint8_t *)ps_malloc(size);
-  if (!blob || f.read(blob, size) != size || memcmp(blob, "TPK2", 4) != 0) {
-    if (blob) { free(blob); blob = nullptr; }
-    f.close();
+  if (!blob) return false;
+  if (memcmp(blob, "TPK2", 4) != 0) {
+    free(blob);
+    blob = nullptr;
     return false;
   }
-  f.close();
 
   uint8_t nActs = blob[4];
   memcpy(&palCount, blob + 5, 2);
@@ -94,27 +154,19 @@ void SdThumbs::unload() {
 
 bool SdThumbs::load() {
   unload();  // recargar sin fugar el blob anterior
-  if (!sdReady) return false;
-  File f = SD_MMC.open("/mons/thumbs.bin", FILE_READ);
-  if (!f) {
-    Serial.println("sin thumbs.bin (galeria sin miniaturas)");
-    return false;
-  }
-  uint32_t sz = f.size();
+  uint32_t sz = 0;
   // acota el tamano: evita un ps_malloc absurdo con un archivo corrupto
-  if (sz < 10 || sz > 2UL * 1024 * 1024) {
-    Serial.println("thumbs.bin invalido (tamano)");
-    f.close();
+  data = readSpriteFile("/mons/thumbs.bin", 10, 2UL * 1024 * 1024, &sz);
+  if (!data) {
+    Serial.println("sin thumbs.bin valido (galeria sin miniaturas)");
     return false;
   }
-  data = (uint8_t *)ps_malloc(sz);
-  if (!data || f.read(data, sz) != sz || memcmp(data, "TPTH", 4) != 0) {
+  if (memcmp(data, "TPTH", 4) != 0) {
     Serial.println("thumbs.bin invalido");
-    if (data) { free(data); data = nullptr; }
-    f.close();
+    free(data);
+    data = nullptr;
     return false;
   }
-  f.close();
   memcpy(&count, data + 4, 2);
   // la tabla de offsets (uno por especie) debe caber entera en lo leido
   if ((uint32_t)6 + 4UL * count > sz) {
@@ -140,6 +192,39 @@ const uint8_t *SdThumbs::get(int16_t dex) const {
   return data + off;
 }
 
+#if !TAMAPOKE_HAS_SD
+bool sdBegin() {
+  sdReady = FLASH_SPRITES_COUNT > 0;
+  Serial.printf("placa sin SD: %u ficheros de sprites en flash\n", FLASH_SPRITES_COUNT);
+  return sdReady;
+}
+
+// sin SD no hay donde guardar ficheros: PUT se rechaza y LS lista lo que va en
+// el firmware (los clientes, tools/send_sd.py y web/index.html, paran al ver ERR)
+bool sdSerialCommand(const String &line) {
+  if (line.startsWith("PUT ")) {
+    Serial.println("ERR");
+    return true;
+  } else if (line == "SDINFO") {
+    Serial.println("sin SD: sprites en flash");
+    Serial.println("DONE");
+    return true;
+  } else if (line == "LS") {
+    for (uint16_t i = 0; i < FLASH_SPRITES_COUNT; i++)
+      Serial.printf("%s %u\n", FLASH_SPRITES[i].name, FLASH_SPRITES[i].rawLen);
+    Serial.println("DONE");
+    return true;
+  }
+  return false;
+}
+
+// el formato TPK1 heredado solo existe en la SD
+bool SdMon::load(uint8_t, bool) {
+  unload();
+  return false;
+}
+
+#else
 bool sdBegin() {
   SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
   sdReady = SD_MMC.begin("/sdcard", true /* modo 1-bit */, true /* formatea si no monta */);
@@ -216,6 +301,8 @@ bool SdMon::load(uint8_t dexNum, bool shiny) {
   return true;
 }
 
+#endif  // TAMAPOKE_HAS_SD (sdBegin, SdMon::load)
+
 void SdMon::unload() {
   if (data) {
     free(data);
@@ -223,6 +310,8 @@ void SdMon::unload() {
   }
   loaded = false;
 }
+
+#if TAMAPOKE_HAS_SD
 
 // ---------------------------------------------------------------------------
 // Protocolo de carga por USB (para llenar la SD sin sacarla de la placa):
@@ -298,3 +387,4 @@ bool sdSerialCommand(const String &line) {
   }
   return false;
 }
+#endif  // TAMAPOKE_HAS_SD (protocolo PUT/LS)

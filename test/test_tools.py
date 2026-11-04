@@ -157,11 +157,91 @@ class TestGeneratedFiles(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_flashsprites_cpp_coincide_con_los_sprites_de_la_sd(self):
+        # la 1.75C (sin SD) lleva los sprites dentro del firmware: cada entrada
+        # tiene que descomprimirse a exactamente el fichero de tools/sdcard/mons.
+        # Se compara el contenido descomprimido, no el texto, para no depender de
+        # la version de zlib con la que se genero.
+        import re
+        import zlib
+        with open(os.path.join(ROOT, 'flashsprites.cpp')) as fh:
+            src = fh.read()
+        entries = re.findall(r'\{"([^"]+)", (\d+)u, (\d+)u, (\d+)u\}', src)
+        body = src.split('FLASH_SPRITES_DATA[', 1)[1].split('{', 1)[1].split('}', 1)[0]
+        blob = bytes(int(b) for b in body.replace('\n', '').split(',') if b)
+        mons = os.path.join(TOOLS, 'sdcard', 'mons')
+        expected = sorted(n for n in os.listdir(mons)
+                          if (n.startswith('p') and n.endswith('.bin')) or n == 'thumbs.bin')
+        self.assertEqual([e[0] for e in entries], expected,
+                         'flashsprites.cpp no lleva los mismos ficheros que tools/sdcard/mons '
+                         '(ejecuta python3 tools/pack_flash.py)')
+        for name, off, zlen, raw in entries:
+            off, zlen, raw = int(off), int(zlen), int(raw)
+            self.assertLessEqual(len(name), 15, f'{name}: no cabe en FlashSprite::name')
+            data = zlib.decompress(blob[off:off + zlen])
+            self.assertEqual(len(data), raw, f'{name}: rawLen no cuadra')
+            with open(os.path.join(mons, name), 'rb') as fh:
+                self.assertEqual(data, fh.read(),
+                                 f'{name} en flashsprites.cpp no coincide con tools/sdcard/mons '
+                                 '(ejecuta python3 tools/pack_flash.py)')
+
     def test_los_ficheros_generados_avisan_de_que_lo_son(self):
-        for name in ('dex.h', 'species.h'):
+        for name in ('dex.h', 'species.h', 'flashsprites.cpp'):
             with open(os.path.join(ROOT, name)) as fh:
                 head = fh.read(400)
             self.assertIn('GENERADO', head, f'{name} deberia decir que esta generado')
+
+
+class TestInstalador(unittest.TestCase):
+    """El instalador web no puede borrar la partida al actualizar.
+
+    La partida vive en la particion NVS. Una imagen combinada desde 0x0 la
+    escribia entera con 0xFF (merge-bin rellena los huecos), y
+    new_install_prompt_erase=false hace que ESP Web Tools borre el chip entero
+    sin preguntar. Las dos cosas destruian el guardado en cada actualizacion.
+    """
+
+    MANIFESTS = ('manifest.json', 'manifest-175c.json')
+    PROTECTED = ('nvs', 'ffat')  # la partida y la FAT de la placa
+
+    @staticmethod
+    def partitions(path):
+        import struct
+        with open(path, 'rb') as fh:
+            data = fh.read()
+        table = {}
+        for i in range(0, len(data), 32):
+            e = data[i:i + 32]
+            if e[:2] != b'\xaa\x50':
+                break
+            off, size = struct.unpack_from('<II', e, 4)
+            table[e[12:28].rstrip(b'\0').decode()] = (off, size)
+        return table
+
+    def test_ninguna_pieza_pisa_la_partida_ni_se_borra_el_chip(self):
+        import json
+        web = os.path.join(ROOT, 'web')
+        for name in self.MANIFESTS:
+            with open(os.path.join(web, name)) as fh:
+                m = json.load(fh)
+            self.assertIs(m.get('new_install_prompt_erase'), True,
+                          f'{name}: new_install_prompt_erase tiene que ser true '
+                          '(false = borrar el chip entero sin preguntar)')
+            parts = m['builds'][0]['parts']
+            ptable = next((p['path'] for p in parts if p['path'].endswith('partitions.bin')), None)
+            self.assertIsNotNone(ptable, f'{name}: falta partitions.bin entre las piezas')
+            table = self.partitions(os.path.join(web, ptable))
+            for prot in self.PROTECTED:
+                self.assertIn(prot, table, f'{name}: la tabla no tiene particion {prot}')
+            for p in parts:
+                path = os.path.join(web, p['path'])
+                self.assertTrue(os.path.exists(path), f'{name}: no existe {p["path"]}')
+                start, end = p['offset'], p['offset'] + os.path.getsize(path)
+                for prot in self.PROTECTED:
+                    po, ps = table[prot]
+                    self.assertTrue(end <= po or start >= po + ps,
+                                    f'{name}: {p["path"]} (0x{start:x}-0x{end:x}) pisa la '
+                                    f'particion {prot} (0x{po:x}-0x{po + ps:x}): borraria la partida')
 
 
 class TestSketchSanity(unittest.TestCase):

@@ -9,8 +9,17 @@ same one as `tools/send_sd.py`).
 ## Contents
 
 - `index.html` — the page (flashing + sprite loader).
-- `manifest.json` — ESP Web Tools config (points at the firmware).
-- `firmware/tamapoke.bin` — combined firmware, flashable at `0x0`.
+- `manifest.json` / `manifest-175c.json` — ESP Web Tools config for the 1.75 and the 1.75C.
+- `firmware/175/` and `firmware/175c/` — the firmware as four parts per board:
+  `bootloader.bin` (0x0), `partitions.bin` (0x8000), `boot_app0.bin` (0xe000) and
+  `app.bin` (0x10000). There is deliberately **no combined image**: `merge-bin` pads
+  the gaps with 0xFF, and flashing that over 0x9000–0xE000 erased the NVS partition,
+  where the saved game lives, on every update. With separate parts that range is
+  never written, so updating keeps your Pokémon. `test/test_tools.py` fails if a
+  manifest part ever overlaps NVS or the FAT partition.
+- `new_install_prompt_erase` must stay **true**: it makes ESP Web Tools show an
+  "Erase device" checkbox that starts unticked. `false` means "don't ask, erase the
+  whole chip".
 - `sprites.pak` — all the sprites in one bundle (TPAK), so the page sends them in
   one click. **Generated** by `tools/pack_bundle.py` (gitignored by default — see
   *Hosting the sprites* below).
@@ -20,7 +29,7 @@ same one as `tools/send_sd.py`).
 After changing the firmware or the sprites:
 
 ```bash
-bash tools/build_web.sh        # recompiles -> firmware/tamapoke.bin AND rebuilds sprites.pak
+bash tools/build_web.sh        # recompiles -> firmware/175/ + firmware/175c/ AND rebuilds sprites.pak
 ```
 
 ## Test locally

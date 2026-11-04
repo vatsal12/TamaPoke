@@ -1,0 +1,28 @@
+{
+  "name": "TamaPoke (ESP32-S3-Touch-AMOLED-1.75C)",
+  "version": "1.18",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "firmware/175c/bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "firmware/175c/partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "firmware/175c/boot_app0.bin",
+          "offset": 57344
+        },
+        {
+          "path": "firmware/175c/app.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
