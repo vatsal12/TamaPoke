@@ -77,6 +77,7 @@ char nameBuf[12] = "";
 uint8_t nameLen = 0;
 uint8_t cardPage = 0;         // 0 perfil, 1 stats+medallas
 bool clockOpen = false;       // pantalla de ajuste de hora (deslizar abajo)
+void openClock();             // prototipo: setup() la abre al arrancar en placas sin RTC
 int clockH = 12, clockM = 0;  // hora en edicion
 
 // escena de bano: espuma sobre el bicho y limpieza al reventar
@@ -177,7 +178,7 @@ void setup() {
   // monitor serie abierto en el host (el bufer TX del USB CDC se llena
   // y nadie lo vacia) -> con timeout 0 los mensajes se descartan
   Serial.setTxTimeoutMs(0);
-  Serial.printf("TamaPoke fw v%s\n", FW_VERSION);
+  Serial.printf("TamaPoke fw v%s (placa %s)\n", FW_VERSION, BOARD_NAME);
   loadLang();  // idioma guardado (ES por defecto)
   Wire.begin(IIC_SDA, IIC_SCL);
   // CST9217 (tactil), AXP2101 (PMU) y PCF85063 (RTC) comparten este bus I2C.
@@ -242,6 +243,12 @@ void setup() {
   audioBegin();  // ES8311 + I2S + amplificador (suena un jingle de arranque)
 
   lastInteract = millis();
+
+#if !TAMAPOKE_HAS_RTC
+  // sin RTC la hora arranca en la ultima guardada, no en la real: se abre el
+  // ajuste de hora para que el usuario la confirme (OK) o la corrija
+  if (!pet.awaitingStarter()) openClock();
+#endif
 }
 
 // carga/descarga el sprite de SD cuando cambia la especie
@@ -465,6 +472,35 @@ void handleSerial() {
     Serial.println("DONE");
   } else if (line == "TIME") {
     Serial.printf("rtc=%u\n", rtcEpoch());
+    Serial.println("DONE");
+  } else if (line == "SPRCHECK") {
+    // autodiagnostico: carga los 151 sprites PMD (normal y shiny) y las 151
+    // miniaturas, igual que el juego, y dice cuales fallan. Bloquea unos segundos.
+    static PmdMon t;
+    uint16_t ok = 0, bad = 0, thumbsOk = 0, acts = 0;
+    uint32_t t0 = millis(), worst = 0;
+    int16_t worstDex = 0;
+    for (int16_t d = 1; d <= DEX_COUNT; d++) {
+      for (uint8_t s = 0; s < 2; s++) {
+        uint32_t a = millis();
+        if (t.load(d, s) && t.has(PMD_IDLE)) {
+          ok++;
+          for (uint8_t k = 0; k < PMD_NACTS; k++) acts += t.has(k);
+        } else {
+          bad++;
+          Serial.printf("FALLO sprite #%03d%s\n", d, s ? " shiny" : "");
+        }
+        uint32_t dt = millis() - a;
+        if (dt > worst) { worst = dt; worstDex = d; }
+        t.unload();
+      }
+      if (thumbs.get(d)) thumbsOk++;
+      else Serial.printf("FALLO miniatura #%03d\n", d);
+    }
+    Serial.printf("SPRCHECK sprites=%u/%u acciones=%u miniaturas=%u/%u carga_max=%lums(#%03d) total=%lums\n",
+                  ok, ok + bad, acts, thumbsOk, DEX_COUNT, (unsigned long)worst, worstDex,
+                  (unsigned long)(millis() - t0));
+    Serial.println(bad == 0 && thumbsOk == DEX_COUNT ? "SPRCHECK OK" : "SPRCHECK FALLOS");
     Serial.println("DONE");
   } else if (line == "GAL") {
     galleryOpen = !galleryOpen;
@@ -1667,8 +1703,8 @@ void renderClock() {
   printT(T(S_CLOCK_CANCEL));
 
   // version del firmware (discreta, abajo del todo)
-  char ver[20];
-  snprintf(ver, sizeof(ver), "TamaPoke v%s", FW_VERSION);
+  char ver[32];
+  snprintf(ver, sizeof(ver), "TamaPoke v%s (%s)", FW_VERSION, BOARD_NAME);
   setSize(1);
   setCur(centerX(ver, 1), 436);
   printT(ver);

@@ -125,7 +125,24 @@ SPEED ← minigame, DEFENSE ← 12 h of unbroken good care). *(Battles: on the r
 
 - Board: [ESP32-S3-Touch-AMOLED-1.75](https://www.waveshare.com/wiki/ESP32-S3-Touch-AMOLED-1.75)
   — get the **Standard** (no case) or **-G** (GPS, also fits) version; **not the "-B"**
-  (ships with a protective case that won't fit). The separate "1.75**C**" is a different board.
+  (ships with a protective case that won't fit). The separate "1.75**C**" is a different board,
+  supported by its own build (below).
+- Also supported: [ESP32-S3-Touch-AMOLED-1.75**C**](https://docs.waveshare.com/ESP32-S3-Touch-AMOLED-1.75C)
+  (aluminium case, 32 MB flash). Same panel, touch, PMU and codec, but the panel and touch
+  resets are on GPIO1/GPIO2 (the 1.75's TF slot), and it has **no RTC and no microSD**. The
+  1.75 firmware leaves it on a black screen, so use the 1.75C build: uncomment
+  `#define TAMAPOKE_BOARD_175C` in `pin_config.h` (or pass `-DTAMAPOKE_BOARD_175C`), or pick
+  "Install TamaPoke for the 1.75C" in the web installer. That build:
+  - carries the whole sprite set (151 + shinies + thumbnails) **inside the firmware**:
+    ~42 MB of sprites zlib-compress to ~1.2 MB (`tools/pack_flash.py` → `flashsprites.cpp`),
+    unpacked to PSRAM on load with the ESP32-S3 ROM's inflater;
+  - keeps time with a software clock while powered. After a full power-off it resumes from
+    the last saved time and opens the set-time screen at boot. Time spent powered off is
+    not counted.
+
+  ```bash
+  arduino-cli compile --fqbn "$FQBN" --build-property "compiler.cpp.extra_flags=-DTAMAPOKE_BOARD_175C" .
+  ```
   - **Where to buy**: [Waveshare store](https://www.waveshare.com/esp32-s3-touch-amoled-1.75.htm) (often on backorder), or the **-G** on Amazon — TamaPoke leaves the GPS unused, the board is otherwise identical: 🇺🇸 [.com](https://www.amazon.com/dp/B0F7XWWMJW?tag=capsuleradar-20) · 🇪🇸 [.es](https://www.amazon.es/dp/B0F7XWWMJW?tag=capsuleradar-21) · 🇩🇪 [.de](https://www.amazon.de/dp/B0F7XWWMJW?tag=capsulerada03-21) · 🇬🇧 [.co.uk](https://www.amazon.co.uk/dp/B0F7XWWMJW?tag=capsulerada0d-21) · 🇮🇹 [.it](https://www.amazon.it/dp/B0F7XWWMJW?tag=capsulerada08-21) · 🇫🇷 [.fr](https://www.amazon.fr/dp/B0F7XWWMJW?tag=capsulerada0e-21) · 🇯🇵 [.co.jp](https://www.amazon.co.jp/dp/B0F7XWWMJW?tag=capsuleradar-22) · 🇨🇦 [.ca](https://www.amazon.ca/dp/B0F7XWWMJW?tag=capsulerada09-20). Optional battery — 1100 mAh protected LiPo, MX1.25 plug: 🇪🇸 [.es](https://www.amazon.es/dp/B0F1FGZQS5?tag=capsuleradar-21) · 🇺🇸 [.com](https://www.amazon.com/dp/B0F1FGZQS5?tag=capsuleradar-20) · 🇮🇹 [.it](https://www.amazon.it/dp/B0F1FGZQS5?tag=capsulerada08-21) · 🇫🇷 [.fr](https://www.amazon.fr/dp/B0F1FGZQS5?tag=capsulerada0e-21) (DE/UK: that exact pack is not listed — search for a *protected* 3.7 V LiPo, ~1100 mAh, size **102540**, 1.25 mm micro-JST plug) — check plug polarity against the board first. <sub>Amazon links are affiliate links; as an Amazon Associate I earn from qualifying purchases.</sub>
   - **MicroSD card** (holds the sprite set — any small, class-10 card works): 🇪🇸 [.es](https://www.amazon.es/s?k=microsd+32gb&tag=capsuleradar-21) · 🇺🇸 [.com](https://www.amazon.com/s?k=microsd+32gb&tag=capsuleradar-20) · 🇩🇪 [.de](https://www.amazon.de/s?k=microsd+32gb&tag=capsulerada03-21) · 🇬🇧 [.co.uk](https://www.amazon.co.uk/s?k=microsd+32gb&tag=capsulerada0d-21) · 🇮🇹 [.it](https://www.amazon.it/s?k=microsd+32gb&tag=capsulerada08-21) · 🇫🇷 [.fr](https://www.amazon.fr/s?k=microsd+32gb&tag=capsulerada0e-21) · 🇯🇵 [.co.jp](https://www.amazon.co.jp/s?k=microsd+32gb&tag=capsuleradar-22) · 🇨🇦 [.ca](https://www.amazon.ca/s?k=microsd+32gb&tag=capsulerada09-20)
 - Round 466×466 AMOLED, **CO5300** driver (QSPI, 80 MHz)
@@ -362,7 +379,8 @@ What the firmware does to save power (the policy is in `power.h`, covered by `te
 runaway-ready state) · `WIPE` (factory reset → new game) · `BEEP` (audio test) ·
 `REG` (Pokédex) · `EGGS` (simulate 20 eggs) · `GAL` (gallery) · `CAREDAY` ·
 `TIME <epoch>` / `RTCSET <epoch>` · `HEALTH` (uptime + heap for the soak test) ·
-`LS` / `PUT` (SD files).
+`LS` / `PUT` (SD files) · `SPRCHECK` (loads every sprite, normal and shiny, plus every
+thumbnail, and reports failures and load times; ends in `SPRCHECK OK`).
 
 To test fast: lower `PET_TICK_MS`, `MINUTES_PER_LEVEL` and `FAREWELL_AGE_MIN` in `pet.h`.
 
