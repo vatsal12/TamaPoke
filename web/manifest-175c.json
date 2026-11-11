@@ -1,6 +1,6 @@
 {
-  "name": "TamaPoke (ESP32-S3-Touch-AMOLED-1.75C)",
-  "version": "1.18",
+  "name": "TamaPoke (1.75C)",
+  "version": "3.12",
   "new_install_prompt_erase": true,
   "builds": [
     {
@@ -21,6 +21,10 @@
         {
           "path": "firmware/175c/app.bin",
           "offset": 65536
+        },
+        {
+          "path": "firmware/175c/sprites.bin",
+          "offset": 4325376
         }
       ]
     }

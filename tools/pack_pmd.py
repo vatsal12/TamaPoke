@@ -15,16 +15,24 @@ Genera /mons/pNNN.bin (y psNNN.bin shiny) en formato TPK2 multi-accion:
 Acciones: 0 Idle, 1 WalkL, 2 WalkR, 3 Sleep, 4 Eat, 5 Hurt, 6 Attack,
 7 Pose, 8 Hop, 9 Nod, 10 DeepBreath, 11 Sit. Las que falten se omiten.
 
-  python3 tools/pack_pmd.py             # los 151, normal + shiny
+  python3 tools/pack_pmd.py             # el dex entero, normal + shiny
+  python3 tools/pack_pmd.py kanto       # solo una region (johto, hoenn)
   python3 tools/pack_pmd.py 7 25        # dex concretos
   python3 tools/pack_pmd.py normal 1 4  # solo normales
+
+Necesita Pillow: pip3 install Pillow
 """
 import os
 import struct
 import sys
-import urllib.request
+import subprocess
 import xml.etree.ElementTree as ET
 from PIL import Image
+
+# Kept in step with dex.h rather than hardcoded, the same way gen_moves.py is.
+import re as _re
+_dexh = open(os.path.join(os.path.dirname(__file__), '..', 'dex.h')).read()
+DEX_COUNT = int(_re.search(r'#define DEX_COUNT (\d+)', _dexh).group(1))
 
 OUT = os.path.join(os.path.dirname(__file__), 'sdcard', 'mons')
 CACHE = os.path.join(os.path.dirname(__file__), 'pmd_cache')
@@ -52,16 +60,20 @@ ACTIONS = [
 
 
 def fetch(url, dest):
+    """curl, not urllib. The python.org macOS build ships without a usable CA
+    bundle, so urlopen dies with CERTIFICATE_VERIFY_FAILED on every request --
+    which this reported as 'sin AnimData.xml', i.e. as if the sprite did not
+    exist. gen_avatars.py and gen_dex_data.py hit the same wall."""
     if os.path.exists(dest):
         return True
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        data = urllib.request.urlopen(req, timeout=30).read()
-        open(dest, 'wb').write(data)
-        return True
-    except Exception:
+    r = subprocess.run(['curl', '-fsSL', '--retry', '2', '-A', 'Mozilla/5.0',
+                        '-o', dest, url], capture_output=True)
+    if r.returncode != 0:
+        if os.path.exists(dest):
+            os.remove(dest)
         return False
+    return True
 
 
 def rgb565(r, g, b):
@@ -152,7 +164,23 @@ def pack(dexnum, shiny=False):
 if __name__ == '__main__':
     args = sys.argv[1:]
     solo_normal = 'normal' in args
-    nums = [int(a) for a in args if a.isdigit()] or list(range(1, 152))
+    # The whole dex by default, not the old hardcoded 151. A region is easy to
+    # ask for on its own, since the fetch is long and most people want Kanto:
+    #   python3 tools/pack_pmd.py kanto
+    # Derived from dex_data.py rather than written out again -- this dict
+    # stopped at Hoenn while dex.h was already 493, so `pack_pmd.py sinnoh`
+    # was not a command that existed.
+    import sys as _s
+    _s.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from dex_data import REGIONS as _DR
+    span = {name.lower(): (lo, hi) for name, lo, hi, _st in _DR}
+    picked = [span[a] for a in args if a in span]
+    nums = [int(a) for a in args if a.isdigit()]
+    if not nums:
+        if picked:
+            nums = [d for lo, hi in picked for d in range(lo, hi + 1)]
+        else:
+            nums = list(range(1, DEX_COUNT + 1))
     fallos = []
     for n in nums:
         for sh in ([False] if solo_normal else [False, True]):

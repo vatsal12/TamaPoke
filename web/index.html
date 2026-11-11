@@ -36,24 +36,40 @@
 <body>
 <div class="wrap">
   <h1>🐢 TamaPoke</h1>
-  <p class="sub">A 151-Pokémon tamagotchi for the Waveshare ESP32-S3-Touch-AMOLED-1.75.
+  <p class="sub">A 386-Pokémon tamagotchi for the Waveshare ESP32-S3-Touch-AMOLED-1.75.
      Install it from your browser — no Arduino, no drivers.</p>
 
   <p class="unsupported" id="unsupported">
     ⚠️ Your browser doesn't support Web Serial. Use <b>Chrome</b> or <b>Edge</b> on a computer.
   </p>
 
+  <div class="step" style="border-left:4px solid #e8503a;background:#fff6f4">
+    <p><b>⚠️ Board not showing up? Read this first — it is almost always this.</b></p>
+    <p>A brand-new board <b>does not appear as a serial port at all</b>. The firmware it
+       ships with never switches USB on, so your computer sees nothing and it looks like a
+       dead board or a broken cable. It is neither. Put it in <b>download mode</b>:</p>
+    <p style="font-size:1.05em"><b>hold BOOT&nbsp;→ tap RESET&nbsp;→ let go of BOOT</b></p>
+    <p class="note">The two small buttons next to the USB-C socket. Nothing on screen will
+       change — that is normal. Now press install and the port will be there.
+       After TamaPoke is on it, this is never needed again.</p>
+    <p class="note">Still nothing? Use a cable that carries <b>data</b> (a charge-only USB-C
+       cable powers the board perfectly and carries nothing), and plug <b>straight into your
+       computer</b> rather than through a hub.</p>
+  </div>
+
   <h2><span class="num">1</span>Flash the firmware</h2>
   <div class="step">
-    <p>Plug the board in via USB and press install. Pick the port and wait.</p>
+    <p>Plug the board in via USB and press install. Pick the port and wait.
+       Takes about a minute. No drivers needed on any OS.</p>
     <esp-web-install-button manifest="manifest.json">
       <button slot="activate">⚡ Install TamaPoke</button>
       <span slot="unsupported">Browser not supported (use Chrome/Edge).</span>
       <span slot="not-allowed">Needs HTTPS.</span>
     </esp-web-install-button>
     <p>Got the <b>ESP32-S3-Touch-AMOLED-1.75C</b> (aluminium case, no microSD slot)? Use this
-       one instead: all the sprites are built into the firmware, so <b>skip step 2</b>. It has
-       no clock chip, so set the time on the screen it shows when it starts.</p>
+       one instead: it installs the sprites for <b>every region</b> into the board's own flash
+       along with the firmware (~9 MB, a minute or two), so <b>skip step 2</b>. It has no clock
+       chip, so set the time on the screen it shows when it starts.</p>
     <esp-web-install-button manifest="manifest-175c.json">
       <button slot="activate">⚡ Install TamaPoke for the 1.75C</button>
       <span slot="unsupported">Browser not supported (use Chrome/Edge).</span>
@@ -63,21 +79,47 @@
        your Pokémon — the save lives in flash and the sprites on the microSD, so a normal
        install keeps both. Only a full <b>Erase</b> wipes your saved pet (the SD sprites
        survive even that). First time on a fresh board? You can erase, no problem.</p>
+    <p class="note" style="border-left:4px solid #e8503a;padding-left:10px">
+       🔄 <b>Updating? Leave "Erase device" unchecked.</b> The installer asks
+       once, with the box already unchecked — click <b>Next</b> without ticking
+       it and your creature, Pokédex and badges all survive, because the
+       firmware is written around the save rather than over it. Tick that box
+       and everything is gone, with no undo. The sprites on the microSD are
+       untouched either way.<br><br>
+       <b>Installers before v2.7 erased it every time, without asking.</b>
+       They shipped one image covering the whole start of flash, the save
+       included, and were configured to wipe the chip before writing. Both are
+       fixed here. Even so, <code>EXPORT</code> on the serial console is the
+       only real safety net: it prints your whole save as a block of
+       <code>IMPORT</code> lines, and pasting that block back restores it.
+       Worth doing before any update you care about.<br><br>
+       A fresh board with nothing on it can be erased safely, and on a board
+       that has never run TamaPoke it makes no difference either way.</p>
   </div>
 
   <h2><span class="num">2</span>Load the sprites onto the microSD</h2>
   <div class="step">
-    <p>Put a microSD into the board (it formats itself). Press <b>Connect board</b>
-       and then <b>Load sprites</b>: they download and copy over USB automatically
-       (~40 MB, a few minutes). Don't remove the card.</p>
+    <p>Put a microSD into the board (it formats itself). Press <b>Connect board</b>,
+       then a region. Any one of them works on its own — pick Johto or Hoenn if
+       that is the game you want — and the others can be added later without
+       redoing this one. Kanto is simply the usual place to start.</p>
+    <p class="note">⏱️ <b>This part is slow, and that is normal.</b> The sprites go over
+       the USB serial link, so Kanto's 40 MB takes roughly <b>10–15 minutes</b>. Leave the
+       tab open and the card in. The progress bar moves the whole time.</p>
     <p class="note">Close the step-1 install tab first (only one program can use
        the port at a time).</p>
     <div class="row">
       <button id="connect">🔌 Connect board</button>
-      <button id="auto" disabled>⬇️ Load sprites</button>
+      <button id="auto" data-region="kanto" disabled>⬇️ Kanto sprites (~40 MB)</button>
+      <button id="autoj" data-region="johto" disabled>⬇️ Johto (~27 MB)</button>
+      <button id="autoh" data-region="hoenn" disabled>⬇️ Hoenn (~38 MB)</button>
+      <button id="autos" data-region="sinnoh" disabled>⬇️ Sinnoh (~33 MB)</button>
+      <button id="autou" data-region="unova" disabled>⬇️ Unova (~40 MB)</button>
+      <button id="autok" data-region="kalos" disabled>⬇️ Kalos (~21 MB)</button>
+      <button id="autoa" data-region="alola" disabled>⬇️ Alola (~24 MB)</button>
     </div>
     <p class="note">Have your own <code>.bin</code> files? <label style="cursor:pointer;text-decoration:underline">pick them manually<input id="files" type="file" accept=".bin" multiple disabled hidden></label></p>
-    <p class="note">🎨 Want to make your own sprites? See <a href="https://github.com/socquique/TamaPoke#generate-and-load-the-sprites-yourself" target="_blank">how to generate &amp; load them</a> in the repo.</p>
+    <p class="note">🎨 Want to make your own sprites? See <a href="https://github.com/DylanPDao/TamaPoke#generate-and-load-the-sprites-yourself" target="_blank">how to generate &amp; load them</a> in the repo.</p>
     <div class="bar" id="bar"><div></div></div>
     <pre id="log"></pre>
   </div>
@@ -87,7 +129,10 @@
      all. Tap the creature to pet it; swipe to open the Pokédex (sideways), the
      stat card (up) or set the clock (down); the physical PWR button turns the
      screen off (short press) or everything off (long press).
-     More in the <a href="https://github.com/socquique/TamaPoke" target="_blank">repository</a>.</p>
+     More in the <a href="https://github.com/DylanPDao/TamaPoke" target="_blank">repository</a>.</p>
+  <p class="note">TamaPoke was created by <b>Quique Tortosa</b> —
+     <a href="https://github.com/socquique/TamaPoke" target="_blank">socquique/TamaPoke</a>.
+     This is a fork that builds on his work.</p>
 
   <p class="note">Sprites from <a href="https://github.com/PMDCollab/SpriteCollab" target="_blank">PMD SpriteCollab</a> (CC BY-NC).
      Pokémon is a ™ of Nintendo / Game Freak. Non-commercial project.</p>
@@ -206,26 +251,88 @@ document.getElementById('connect').onclick = async () => {
     writer = port.writable.getWriter();
     lineBuf = '';
     log('Connected. Press "Load sprites".');
-    document.getElementById('auto').disabled = false;
+    for (const b of document.querySelectorAll('[data-region]')) b.disabled = false;
     document.getElementById('files').disabled = false;
+    probeRegions();      // grey out any region that has no bundle to download
     document.getElementById('connect').disabled = true;
   } catch (e) { log('Could not connect: ' + e.message); }
 };
 
-document.getElementById('auto').onclick = async () => {
+// One bundle per region. Kanto alone is ~40 MB and all three would be ~100 MB,
+// which is GitHub's hard per-file limit -- so they are separate files, and a
+// player can take Kanto and stop, or add a region later without re-sending what
+// is already on the card.
+// Where the bundles live. They are NOT committed: each is ~40 MB, and putting
+// them in the repo would make every clone of a firmware project carry 100+ MB of
+// sprites forever. A GitHub Release hosts them outside the git history, and its
+// downloads send Access-Control-Allow-Origin, so fetch() from Pages works.
+//
+// Same origin is tried first anyway, so `python3 -m http.server` in web/ with the
+// paks sitting there works for local testing without touching this.
+const PAK_RELEASE = 'https://github.com/DylanPDao/TamaPoke/releases/latest/download';
+
+function pakUrls(region) {
+  return [`sprites-${region}.pak`, `${PAK_RELEASE}/sprites-${region}.pak`];
+}
+
+async function fetchPak(region) {
+  let last;
+  for (const url of pakUrls(region)) {
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) return await resp.arrayBuffer();
+      last = new Error('HTTP ' + resp.status);
+    } catch (e) { last = e; }
+  }
+  throw last || new Error('not found');
+}
+
+// HEAD, not a ranged GET: a ranged GET against a server that ignores Range --
+// python's http.server does -- starts streaming all 40 MB just to find out the
+// file exists. HEAD sends headers only, and both a local server and GitHub
+// releases support it.
+// A region whose sprites have not been packed yet should not present a button
+// that can only fail -- "Failed to fetch" means nothing to somebody installing
+// this for the first time.
+async function probeRegions() {
+  for (const b of document.querySelectorAll('[data-region]')) {
+    const region = b.dataset.region;
+    let found = false;
+    for (const url of pakUrls(region)) {
+      try {
+        const r = await fetch(url, { method: 'HEAD' });
+        if (r.ok) { found = true; break; }
+      } catch (e) { /* try the next */ }
+    }
+    if (!found) {
+      b.disabled = true;
+      b.textContent = b.textContent.replace(/^⬇️ /, '') .replace(/ \(.*\)$/, '') + ' — not published yet';
+      b.title = 'No sprite bundle exists for this region yet. See web/README.md.';
+    }
+  }
+}
+
+async function loadRegion(btn) {
+  const region = btn.dataset.region;
   if (!writer) { log('Connect the board first.'); return; }
-  document.getElementById('auto').disabled = true;
-  log('Downloading sprite bundle (~58 MB)...');
+  btn.disabled = true;
+  log(`Downloading the ${region} sprite bundle (this is the slow part)...`);
   let items;
   try {
-    // sprites.pak servido desde el mismo origen (GitHub Pages) -> sin lios de CORS
-    const resp = await fetch('sprites.pak');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    items = parsePak(await resp.arrayBuffer());
-  } catch (e) { log('Could not download sprites.pak: ' + e.message); return; }
-  log(`${items.length} sprites. Sending over USB...`);
+    items = parsePak(await fetchPak(region));
+  } catch (e) {
+    log(`Could not download the ${region} bundle: ` + e.message);
+    log(`If this repo has no release yet, that is why -- see web/README.md.`);
+    btn.disabled = false;
+    return;
+  }
+  log(`${items.length} ${region} sprites. Sending over USB...`);
   await sendAll(items);
-};
+  log(`${region} done. You can load another region, or stop here.`);
+}
+// Driven off the markup, so adding a region is ONE new button and nothing
+// else. This was three separate hardcoded id lists.
+for (const b of document.querySelectorAll('[data-region]')) b.onclick = () => loadRegion(b);
 
 document.getElementById('files').onchange = async (ev) => {
   const files = [...ev.target.files];

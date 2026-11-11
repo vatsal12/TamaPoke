@@ -1,59 +1,118 @@
 #include "sdmon.h"
+#include "noart.h"
 #include "pin_config.h"
+#include "pet.h"   // gRegionArt, REGIONS -- the mask this narrows
 #if TAMAPOKE_HAS_SD
 #include <FS.h>
 #include <SD_MMC.h>
 #endif
 #if TAMAPOKE_FLASH_SPRITES
-#include "flashsprites.h"
-#include "miniz.h"  // tinfl de la ROM del ESP32-S3 (sin libreria extra)
+#include <esp_partition.h>
+#include "miniz.h"  // tinfl de la ROM del ESP32-S3 (esp_rom)
 #endif
 
-// true cuando hay de donde sacar sprites: la SD montada o, en placas sin SD,
-// el paquete de sprites dentro del firmware
+// "sdReady" = hay sprites disponibles. En la 1.75 vienen de la microSD; en la
+// 1.75C (sin ranura) de la particion "sprites" de la flash, que el instalador
+// graba aparte del programa (ver tools/pack_flash.py y partitions.csv).
 bool sdReady = false;
 bool sdDirty = false;
+bool sdArtDirty = false;
 SdThumbs thumbs;
 
 #if TAMAPOKE_FLASH_SPRITES
-static const FlashSprite *flashFind(const char *path) {
+// ---------------------------------------------------------------------------
+// Paquete de sprites en flash (formato TPKZ, lo genera tools/pack_flash.py):
+//   "TPKZ" u16 count u16 version, luego count entradas de 28 bytes
+//   { char name[16]; u32 offset; u32 zlen; u32 rawLen } ordenadas por nombre,
+//   y los datos: cada fichero de /mons comprimido con zlib (con cabecera).
+// Los offsets cuentan desde el principio de la particion. El indice (~44 KB con
+// las 7 regiones) se copia a PSRAM al arrancar; los datos se leen al cargar.
+// ---------------------------------------------------------------------------
+struct PackEntry {
+  char name[16];    // "p001.bin", "ps025.bin", "thumbs.bin" (sin /mons/)
+  uint32_t offset;
+  uint32_t zlen;
+  uint32_t rawLen;
+};
+static_assert(sizeof(PackEntry) == 28, "TPKZ: entradas de 28 bytes");
+
+static const esp_partition_t *gPackPart = nullptr;
+static PackEntry *gPack = nullptr;
+static uint16_t gPackCount = 0;
+
+static bool packOpen() {
+  gPackPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "sprites");
+  if (!gPackPart) {
+    Serial.println("sin particion 'sprites' (tabla de particiones antigua?)");
+    return false;
+  }
+  uint8_t hdr[8];
+  if (esp_partition_read(gPackPart, 0, hdr, sizeof(hdr)) != ESP_OK || memcmp(hdr, "TPKZ", 4) != 0) {
+    Serial.println("particion 'sprites' vacia: instala los sprites con el instalador web");
+    return false;
+  }
+  uint16_t n;
+  memcpy(&n, hdr + 4, 2);
+  uint32_t idxBytes = (uint32_t)n * sizeof(PackEntry);
+  if (n == 0 || sizeof(hdr) + idxBytes > gPackPart->size) return false;
+  gPack = (PackEntry *)ps_malloc(idxBytes);
+  if (!gPack || esp_partition_read(gPackPart, sizeof(hdr), gPack, idxBytes) != ESP_OK) {
+    if (gPack) { free(gPack); gPack = nullptr; }
+    return false;
+  }
+  gPackCount = n;
+  return true;
+}
+
+// busqueda binaria: el empaquetador ordena por nombre (orden de bytes, como strncmp)
+static const PackEntry *packFind(const char *path) {
   if (strncmp(path, "/mons/", 6) == 0) path += 6;
-  for (uint16_t i = 0; i < FLASH_SPRITES_COUNT; i++)
-    if (strcmp(FLASH_SPRITES[i].name, path) == 0) return &FLASH_SPRITES[i];
+  int lo = 0, hi = (int)gPackCount - 1;
+  while (lo <= hi) {
+    int mid = (lo + hi) / 2;
+    int c = strncmp(path, gPack[mid].name, sizeof(gPack[mid].name));
+    if (c == 0) return &gPack[mid];
+    if (c < 0) hi = mid - 1; else lo = mid + 1;
+  }
   return nullptr;
 }
 
-// descomprime un stream zlib entero de flash a dst. El estado del descompresor
-// (~11 KB) va al heap: en la pila del loop (8 KB) no cabe.
-static bool flashInflate(const FlashSprite *e, uint8_t *dst) {
+// lee el stream comprimido a PSRAM y lo descomprime entero. El estado del
+// descompresor (~11 KB) va al heap: en la pila del loop (8 KB) no cabe.
+static uint8_t *packRead(const PackEntry *e, uint32_t minSize, uint32_t maxSize, uint32_t *outSize) {
+  if (e->rawLen < minSize || e->rawLen > maxSize) return nullptr;
+  if ((uint64_t)e->offset + e->zlen > gPackPart->size) return nullptr;
+  uint8_t *z = (uint8_t *)ps_malloc(e->zlen);
+  uint8_t *out = (uint8_t *)ps_malloc(e->rawLen);
   tinfl_decompressor *d = (tinfl_decompressor *)malloc(sizeof(tinfl_decompressor));
-  if (!d) return false;
-  tinfl_init(d);
-  size_t inLen = e->zlen, outLen = e->rawLen;
-  tinfl_status st = tinfl_decompress(d, FLASH_SPRITES_DATA + e->offset, &inLen, dst, dst, &outLen,
-                                     TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-  free(d);
-  return st == TINFL_STATUS_DONE && outLen == e->rawLen;
+  bool ok = z && out && d && esp_partition_read(gPackPart, e->offset, z, e->zlen) == ESP_OK;
+  if (ok) {
+    tinfl_init(d);
+    size_t inLen = e->zlen, outLen = e->rawLen;
+    tinfl_status st = tinfl_decompress(d, z, &inLen, out, out, &outLen,
+                                       TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    ok = (st == TINFL_STATUS_DONE && outLen == e->rawLen);
+    if (!ok) Serial.printf("%.16s: fallo al descomprimir\n", e->name);
+  }
+  if (d) free(d);
+  if (z) free(z);
+  if (!ok) {
+    if (out) free(out);
+    return nullptr;
+  }
+  *outSize = e->rawLen;
+  return out;
 }
-#endif
+#endif  // TAMAPOKE_FLASH_SPRITES
 
-// Lee un fichero de sprites entero a PSRAM (de la SD o del firmware). Devuelve
+// Lee un fichero de sprites entero a PSRAM (de la SD o de la flash). Devuelve
 // nullptr si no existe, no cabe en [minSize, maxSize] o falla la lectura; el
 // llamador libera con free().
 static uint8_t *readSpriteFile(const char *path, uint32_t minSize, uint32_t maxSize, uint32_t *outSize) {
   if (!sdReady) return nullptr;
 #if TAMAPOKE_FLASH_SPRITES
-  const FlashSprite *e = flashFind(path);
-  if (!e || e->rawLen < minSize || e->rawLen > maxSize) return nullptr;
-  uint8_t *buf = (uint8_t *)ps_malloc(e->rawLen);
-  if (!buf) return nullptr;
-  if (!flashInflate(e, buf)) {
-    Serial.printf("%s: fallo al descomprimir\n", path);
-    free(buf);
-    return nullptr;
-  }
-  *outSize = e->rawLen;
-  return buf;
+  const PackEntry *e = packFind(path);
+  return e ? packRead(e, minSize, maxSize, outSize) : nullptr;
 #else
   File f = SD_MMC.open(path, FILE_READ);
   if (!f) return nullptr;
@@ -71,16 +130,34 @@ static uint8_t *readSpriteFile(const char *path, uint32_t minSize, uint32_t maxS
 #endif
 }
 
-bool PmdMon::load(uint8_t dexNum, bool shiny) {
+// existe el fichero? (sin leerlo: para el sondeo de regiones)
+static bool spriteFileExists(const char *path) {
+  if (!sdReady) return false;
+#if TAMAPOKE_FLASH_SPRITES
+  return packFind(path) != nullptr;
+#else
+  File f = SD_MMC.open(path, FILE_READ);
+  if (!f) return false;
+  f.close();
+  return true;
+#endif
+}
+
+bool PmdMon::load(int16_t dexNum, bool shiny) {
+  // int16_t, NOT uint8_t. The dex reached 386 and this did not follow, so
+  // everything from 256 up wrapped into Kanto: MARSHTOMP (258) opened
+  // p002.bin and drew an IVYSAUR. Same trap that caught DexEntry::evolvesTo
+  // and TrainerMon::dex when the expansion landed.
+  if (dexNum < 1 || dexNum > 999) return false;
   unload();
   if (!sdReady) return false;
 
   char path[28];
   uint32_t size = 0;
-  snprintf(path, sizeof(path), "/mons/p%s%03u.bin", shiny ? "s" : "", dexNum);
+  snprintf(path, sizeof(path), "/mons/p%s%03u.bin", shiny ? "s" : "", (unsigned)dexNum);
   blob = readSpriteFile(path, 7, 3UL * 1024 * 1024, &size);
   if (!blob && shiny) {  // sin shiny PMD: usa el normal
-    snprintf(path, sizeof(path), "/mons/p%03u.bin", dexNum);
+    snprintf(path, sizeof(path), "/mons/p%03u.bin", (unsigned)dexNum);
     blob = readSpriteFile(path, 7, 3UL * 1024 * 1024, &size);
   }
   if (!blob) return false;
@@ -90,6 +167,7 @@ bool PmdMon::load(uint8_t dexNum, bool shiny) {
     return false;
   }
 
+  dex = dexNum;                  // what is actually in here, for the tests
   uint8_t nActs = blob[4];
   memcpy(&palCount, blob + 5, 2);
   if (palCount > 256 || (uint32_t)7 + palCount * 2 > size) { unload(); return false; }
@@ -129,7 +207,7 @@ bool PmdMon::load(uint8_t dexNum, bool shiny) {
     a.base = base;
   }
   loaded = true;
-  Serial.printf("cargado %s (%u KB)\n", path, size / 1024);
+  Serial.printf("cargado %s (%u KB)\n", path, (unsigned)(size / 1024));
   return true;
 }
 
@@ -156,7 +234,7 @@ bool SdThumbs::load() {
   unload();  // recargar sin fugar el blob anterior
   uint32_t sz = 0;
   // acota el tamano: evita un ps_malloc absurdo con un archivo corrupto
-  data = readSpriteFile("/mons/thumbs.bin", 10, 2UL * 1024 * 1024, &sz);
+  data = readSpriteFile("/mons/thumbs.bin", 10, 4UL * 1024 * 1024, &sz);
   if (!data) {
     Serial.println("sin thumbs.bin valido (galeria sin miniaturas)");
     return false;
@@ -176,7 +254,7 @@ bool SdThumbs::load() {
   }
   size = sz;
   loaded = true;
-  Serial.printf("miniaturas cargadas: %u (%u KB)\n", count, sz / 1024);
+  Serial.printf("miniaturas cargadas: %u (%u KB)\n", count, (unsigned)(sz / 1024));
   return true;
 }
 
@@ -192,26 +270,60 @@ const uint8_t *SdThumbs::get(int16_t dex) const {
   return data + off;
 }
 
-#if !TAMAPOKE_HAS_SD
+// Which regions actually have their sprite pack on the card (or in flash).
+//
+// Three probes per region, not one: the realistic failure is a half-finished
+// copy of a 100 MB pack, and a single probe would call that region present.
+// Start, middle and end, so a copy that stopped partway fails the check.
+//
+// This NARROWS gRegionArt, which starts as everything. A board with no sprites
+// at all is therefore untouched and keeps today's behaviour, which is the
+// documented requirement -- an empty game would be a worse answer than a
+// graceful one.
+void sdScanRegionArt(bool verbose) {
+  if (!sdReady) return;                 // no sprites: leave every region enabled
+  uint16_t mask = 0;
+  for (uint8_t r = 0; r < REGION_COUNT; r++) {
+    if (r == REGION_ALL) continue;      // derived from the others, never probed
+    const RegionInfo &rg = REGIONS[r];
+    const int16_t probe[3] = { sdRegionProbe(r, 0), sdRegionProbe(r, 1),
+                               sdRegionProbe(r, 2) };
+    bool all = true;
+    for (int i = 0; i < 3 && all; i++) {
+      char path[28];
+      snprintf(path, sizeof(path), "/mons/p%03u.bin", (unsigned)probe[i]);
+      if (!spriteFileExists(path)) all = false;
+    }
+    if (all) mask |= (uint16_t)(1u << r);
+    if (verbose)
+      Serial.printf("art: %-6s %s\n", rg.name, all ? "si" : "NO (falta el pack)");
+  }
+  gRegionArt = mask;
+}
+
+#if TAMAPOKE_FLASH_SPRITES
 bool sdBegin() {
-  sdReady = FLASH_SPRITES_COUNT > 0;
-  Serial.printf("placa sin SD: %u ficheros de sprites en flash\n", FLASH_SPRITES_COUNT);
+  sdReady = packOpen();
+  if (sdReady) {
+    Serial.printf("placa sin SD: %u ficheros de sprites en la particion 'sprites'\n", gPackCount);
+    sdScanRegionArt();
+  }
   return sdReady;
 }
 
-// sin SD no hay donde guardar ficheros: PUT se rechaza y LS lista lo que va en
-// el firmware (los clientes, tools/send_sd.py y web/index.html, paran al ver ERR)
+// sin SD no hay donde guardar ficheros: PUT se rechaza y LS lista lo que hay en
+// la flash (los clientes, tools/send_sd.py y web/index.html, paran al ver ERR)
 bool sdSerialCommand(const String &line) {
   if (line.startsWith("PUT ")) {
     Serial.println("ERR");
     return true;
   } else if (line == "SDINFO") {
-    Serial.println("sin SD: sprites en flash");
+    Serial.printf("sin SD: %u sprites en flash\n", gPackCount);
     Serial.println("DONE");
     return true;
   } else if (line == "LS") {
-    for (uint16_t i = 0; i < FLASH_SPRITES_COUNT; i++)
-      Serial.printf("%s %u\n", FLASH_SPRITES[i].name, FLASH_SPRITES[i].rawLen);
+    for (uint16_t i = 0; i < gPackCount; i++)
+      Serial.printf("%.16s %u\n", gPack[i].name, (unsigned)gPack[i].rawLen);
     Serial.println("DONE");
     return true;
   }
@@ -219,7 +331,7 @@ bool sdSerialCommand(const String &line) {
 }
 
 // el formato TPK1 heredado solo existe en la SD
-bool SdMon::load(uint8_t, bool) {
+bool SdMon::load(int16_t, bool) {
   unload();
   return false;
 }
@@ -231,21 +343,23 @@ bool sdBegin() {
   if (sdReady) {
     Serial.printf("SD montada: %llu MB\n", SD_MMC.cardSize() / (1024ULL * 1024ULL));
     SD_MMC.mkdir("/mons");
+    sdScanRegionArt();
   } else {
     Serial.println("SD no detectada (el juego usa los sprites de flash)");
   }
   return sdReady;
 }
 
-bool SdMon::load(uint8_t dexNum, bool shiny) {
+bool SdMon::load(int16_t dexNum, bool shiny) {
+  if (dexNum < 1 || dexNum > 999) return false;
   unload();
   if (!sdReady) return false;
 
   char path[24];
-  snprintf(path, sizeof(path), "/mons/%s%03u.bin", shiny ? "s" : "", dexNum);
+  snprintf(path, sizeof(path), "/mons/%s%03u.bin", shiny ? "s" : "", (unsigned)dexNum);
   File f = SD_MMC.open(path, FILE_READ);
   if (!f && shiny) {  // sin variante shiny: usa la normal
-    snprintf(path, sizeof(path), "/mons/%03u.bin", dexNum);
+    snprintf(path, sizeof(path), "/mons/%03u.bin", (unsigned)dexNum);
     f = SD_MMC.open(path, FILE_READ);
   }
   if (!f) {
@@ -285,7 +399,7 @@ bool SdMon::load(uint8_t dexNum, bool shiny) {
   uint32_t got = f.read(data, size);
   f.close();
   if (got != size) {
-    Serial.printf("%s truncado (%u de %u)\n", path, got, size);
+    Serial.printf("%s truncado (%u de %u)\n", path, (unsigned)got, (unsigned)size);
     unload();
     return false;
   }
@@ -301,7 +415,7 @@ bool SdMon::load(uint8_t dexNum, bool shiny) {
   return true;
 }
 
-#endif  // TAMAPOKE_HAS_SD (sdBegin, SdMon::load)
+#endif  // TAMAPOKE_FLASH_SPRITES (sdBegin, SdMon::load)
 
 void SdMon::unload() {
   if (data) {
@@ -366,6 +480,11 @@ bool sdSerialCommand(const String &line) {
     f.close();
     Serial.setTimeout(1000);
     sdDirty = (remaining == 0);
+    // A pack file just landed, so which regions are playable may have changed.
+    // Flag it rather than rescanning here: this runs between the last data block
+    // and the DONE the host is waiting on, and 15 file opens belong nowhere near
+    // that. loop() picks it up.
+    if (remaining == 0) sdArtDirty = true;
     Serial.println(remaining == 0 ? "DONE" : "ERR");
     return true;
   } else if (line == "SDINFO") {  // diagnostico remoto de "no me reconoce la SD"

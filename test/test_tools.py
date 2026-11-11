@@ -44,18 +44,33 @@ class TestDexData(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from dex_data import DEX, TYPE_ACCENTS, CLASSIC, RARE, LEGENDARY, SLUGS
+        from dex_data import (DEX, TYPE_ACCENTS, CLASSIC, RARE, LEGENDARY, SLUGS,
+                              REGIONS, EEVEE_BRANCHES)
         from dex_stats import BASE_STATS
         from dex_names import LOCAL_NAMES
         cls.DEX, cls.ACCENTS, cls.CLASSIC = DEX, TYPE_ACCENTS, CLASSIC
         cls.RARE, cls.LEGENDARY, cls.SLUGS = RARE, LEGENDARY, SLUGS
+        cls.REGIONS, cls.EEVEE = REGIONS, EEVEE_BRANCHES
         cls.STATS, cls.NAMES = BASE_STATS, LOCAL_NAMES
         cls.byNum = {row[0]: row for row in DEX}
+        # lo que solo sale por evolucion: destino de alguna evolucion o rama de
+        # Eevee (gen_dex.py lo marca R_EVO por encima de RARE/LEGENDARY)
+        cls.evolucionadas = {row[4] for row in DEX if row[4]} | set(EEVEE_BRANCHES)
 
-    def test_estan_las_151_especies_sin_huecos_ni_repetidos(self):
+    # v3: 809 especies en 7 regiones (antes 151)
+    def test_estan_todas_las_especies_sin_huecos_ni_repetidos(self):
         nums = [row[0] for row in self.DEX]
-        self.assertEqual(len(nums), 151)
-        self.assertEqual(sorted(nums), list(range(1, 152)))
+        total = max(hi for _, _, hi, _ in self.REGIONS)
+        self.assertEqual(len(nums), total)
+        self.assertEqual(sorted(nums), list(range(1, total + 1)))
+
+    def test_las_regiones_cubren_la_pokedex_una_vez(self):
+        visto = []
+        for name, lo, hi, starters in self.REGIONS:
+            visto += list(range(lo, hi + 1))
+            for s in starters:
+                self.assertTrue(lo <= s <= hi, f'{name}: inicial {s} fuera de su region')
+        self.assertEqual(sorted(visto), sorted(self.byNum), 'regiones con huecos o solapes')
 
     def test_los_slugs_son_unicos_y_en_minusculas(self):
         slugs = [row[1] for row in self.DEX]
@@ -97,25 +112,45 @@ class TestDexData(unittest.TestCase):
         for tipo, col in self.ACCENTS.items():
             self.assertRegex(col, r'^#[0-9a-fA-F]{6}$', f'color raro en {tipo}: {col}')
 
+    # v3: al anadir bebes de gen 2+ (TYROGUE, MUNCHLAX, HAPPINY...) varias
+    # especies de RARE/LEGENDARY pasaron a ser destino de evolucion. gen_dex.py
+    # da prioridad a R_EVO, asi que lo que importa es que en dex.h NINGUNA forma
+    # evolucionada pueda salir de un huevo, y que lo raro/legendario que si es
+    # forma base lo sea de verdad.
     def test_las_rarezas_apuntan_a_formas_base(self):
-        evolucionadas = {row[4] for row in self.DEX if row[4]}
+        with open(os.path.join(ROOT, 'dex.h')) as fh:
+            filas = re.findall(r'^\s*\{ "[^"]*", \d+, \d+, (R_\w+),.*// (\d+) ', fh.read(), re.M)
+        rareza = {int(n): r for r, n in filas}
+        self.assertEqual(set(rareza), set(self.byNum), 'dex.h no tiene una fila por especie')
         for num in sorted(self.RARE | self.LEGENDARY):
             self.assertIn(num, self.byNum, f'rareza para una especie inexistente: {num}')
-            self.assertNotIn(num, evolucionadas,
-                             f'{self.byNum[num][2]} solo sale por evolucion: la rareza no le sirve')
+        for num in self.evolucionadas:
+            self.assertEqual(rareza[num], 'R_EVO',
+                             f'{self.byNum[num][2]} solo sale por evolucion y saldria de un huevo')
+        for num in sorted((self.LEGENDARY - self.evolucionadas)):
+            self.assertEqual(rareza[num], 'R_LEGENDARIO', f'{self.byNum[num][2]}')
+        for num in sorted((self.RARE - self.evolucionadas - self.LEGENDARY)):
+            self.assertEqual(rareza[num], 'R_RARO', f'{self.byNum[num][2]}')
         self.assertFalse(self.RARE & self.LEGENDARY, 'una especie no puede ser rara y legendaria')
 
+    # v3: iniciales por region. PIKACHU (Amarillo) es la unica forma
+    # evolucionada permitida: con PICHU en la Pokedex es destino de evolucion.
     def test_los_iniciales_clasicos_existen(self):
-        evolucionadas = {row[4] for row in self.DEX if row[4]}
-        for num in self.CLASSIC:
+        iniciales = set(self.CLASSIC)
+        for _, _, _, starters in self.REGIONS:
+            iniciales |= set(starters)
+        for num in sorted(iniciales):
             self.assertIn(num, self.byNum, f'inicial inexistente: {num}')
-            self.assertNotIn(num, evolucionadas, f'{self.byNum[num][2]} no puede ser inicial')
+            if num != 25:
+                self.assertNotIn(num, self.evolucionadas,
+                                 f'{self.byNum[num][2]} no puede ser inicial')
 
-    def test_hay_stats_base_de_las_151(self):
+    # v3: (hp, atk, def, vel, spa, spd) -- 6 valores, antes 4
+    def test_hay_stats_base_de_todas(self):
         for num in self.byNum:
             self.assertIn(num, self.STATS, f'faltan stats de {self.byNum[num][2]}')
-            hp, atk, dfn, spe = self.STATS[num]
-            for v in (hp, atk, dfn, spe):
+            self.assertEqual(len(self.STATS[num]), 6, f'{self.byNum[num][2]}: se esperan 6 stats')
+            for v in self.STATS[num]:
                 self.assertTrue(0 < v <= 255, f'stat fuera de rango en {self.byNum[num][2]}: {v}')
 
     def test_los_nombres_traducidos_cuadran_con_su_fuente(self):
@@ -157,36 +192,40 @@ class TestGeneratedFiles(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_flashsprites_cpp_coincide_con_los_sprites_de_la_sd(self):
-        # la 1.75C (sin SD) lleva los sprites dentro del firmware: cada entrada
-        # tiene que descomprimirse a exactamente el fichero de tools/sdcard/mons.
-        # Se compara el contenido descomprimido, no el texto, para no depender de
-        # la version de zlib con la que se genero.
-        import re
+    def test_el_paquete_de_sprites_de_la_175c_coincide_con_los_bundles(self):
+        # la 1.75C (sin SD) lee los sprites de la particion "sprites": cada entrada
+        # del paquete TPKZ tiene que descomprimirse a exactamente el fichero del
+        # bundle de su region, y el indice tiene que ir ordenado (el firmware hace
+        # busqueda binaria). Se compara el contenido, no los bytes comprimidos.
+        import glob
+        import struct
         import zlib
-        with open(os.path.join(ROOT, 'flashsprites.cpp')) as fh:
-            src = fh.read()
-        entries = re.findall(r'\{"([^"]+)", (\d+)u, (\d+)u, (\d+)u\}', src)
-        body = src.split('FLASH_SPRITES_DATA[', 1)[1].split('{', 1)[1].split('}', 1)[0]
-        blob = bytes(int(b) for b in body.replace('\n', '').split(',') if b)
-        mons = os.path.join(TOOLS, 'sdcard', 'mons')
-        expected = sorted(n for n in os.listdir(mons)
-                          if (n.startswith('p') and n.endswith('.bin')) or n == 'thumbs.bin')
-        self.assertEqual([e[0] for e in entries], expected,
-                         'flashsprites.cpp no lleva los mismos ficheros que tools/sdcard/mons '
+        sys.path.insert(0, TOOLS)
+        import pack_flash
+        path = os.path.join(ROOT, 'web', 'firmware', '175c', 'sprites.bin')
+        if not os.path.exists(path):
+            self.skipTest('sin web/firmware/175c/sprites.bin (ejecuta tools/build_web.sh)')
+        with open(path, 'rb') as fh:
+            blob = fh.read()
+        self.assertEqual(blob[:4], b'TPKZ')
+        self.assertLessEqual(len(blob), pack_flash.PARTITION_SIZE)
+        n = struct.unpack_from('<H', blob, 4)[0]
+        idx = [pack_flash.ENTRY.unpack_from(blob, 8 + i * pack_flash.ENTRY.size) for i in range(n)]
+        names = [e[0].rstrip(b'\0') for e in idx]
+        self.assertEqual(names, sorted(names), 'el indice TPKZ tiene que ir ordenado')
+        by_name = dict(zip(names, idx))
+        files = pack_flash.collect(glob.glob(pack_flash.PAKS))
+        self.assertEqual(set(by_name), {k.encode() for k in files},
+                         'sprites.bin no lleva los mismos ficheros que web/sprites-*.pak '
                          '(ejecuta python3 tools/pack_flash.py)')
-        for name, off, zlen, raw in entries:
-            off, zlen, raw = int(off), int(zlen), int(raw)
-            self.assertLessEqual(len(name), 15, f'{name}: no cabe en FlashSprite::name')
-            data = zlib.decompress(blob[off:off + zlen])
-            self.assertEqual(len(data), raw, f'{name}: rawLen no cuadra')
-            with open(os.path.join(mons, name), 'rb') as fh:
-                self.assertEqual(data, fh.read(),
-                                 f'{name} en flashsprites.cpp no coincide con tools/sdcard/mons '
-                                 '(ejecuta python3 tools/pack_flash.py)')
+        for name, data in files.items():
+            _, off, zlen, raw = by_name[name.encode()]
+            self.assertEqual(raw, len(data), f'{name}: rawLen no cuadra')
+            self.assertEqual(zlib.decompress(blob[off:off + zlen]), data,
+                             f'{name} en sprites.bin no coincide con su bundle')
 
     def test_los_ficheros_generados_avisan_de_que_lo_son(self):
-        for name in ('dex.h', 'species.h', 'flashsprites.cpp'):
+        for name in ('dex.h', 'species.h'):
             with open(os.path.join(ROOT, name)) as fh:
                 head = fh.read(400)
             self.assertIn('GENERADO', head, f'{name} deberia decir que esta generado')
@@ -202,7 +241,7 @@ class TestInstalador(unittest.TestCase):
     """
 
     MANIFESTS = ('manifest.json', 'manifest-175c.json')
-    PROTECTED = ('nvs', 'ffat')  # la partida y la FAT de la placa
+    PROTECTED = ('nvs', 'tamabox')  # la partida y la caja
 
     @staticmethod
     def partitions(path):
@@ -242,6 +281,29 @@ class TestInstalador(unittest.TestCase):
                     self.assertTrue(end <= po or start >= po + ps,
                                     f'{name}: {p["path"]} (0x{start:x}-0x{end:x}) pisa la '
                                     f'particion {prot} (0x{po:x}-0x{po + ps:x}): borraria la partida')
+
+    def test_la_partida_sigue_donde_estaba(self):
+        # la tabla de particiones cambio (app de 4 MB, caja, sprites), pero la NVS
+        # tiene que seguir EXACTAMENTE en 0x9000 con 20 KB, como en app3M_fat9M_16MB:
+        # si se moviera, la primera actualizacion perderia la partida
+        for d in ('175', '175c'):
+            path = os.path.join(ROOT, 'web', 'firmware', d, 'partitions.bin')
+            table = self.partitions(path)
+            self.assertEqual(table['nvs'], (0x9000, 0x5000), f'{d}: la NVS se ha movido')
+            self.assertIn('sprites', table)
+            self.assertIn('tamabox', table)
+
+    def test_los_sprites_de_la_175c_caben_en_su_particion(self):
+        import json
+        web = os.path.join(ROOT, 'web')
+        with open(os.path.join(web, 'manifest-175c.json')) as fh:
+            parts = json.load(fh)['builds'][0]['parts']
+        table = self.partitions(os.path.join(web, 'firmware', '175c', 'partitions.bin'))
+        sp = next(p for p in parts if p['path'].endswith('sprites.bin'))
+        po, ps = table['sprites']
+        size = os.path.getsize(os.path.join(web, sp['path']))
+        self.assertEqual(sp['offset'], po, 'sprites.bin no va al principio de la particion sprites')
+        self.assertLessEqual(size, ps, 'sprites.bin no cabe en la particion sprites')
 
 
 class TestSketchSanity(unittest.TestCase):
@@ -289,6 +351,13 @@ class TestBuffersDeTexto(unittest.TestCase):
         'S_INFO_FMT': ('baya',),
         'S_FAREWELL_BTN': ('nombre_o_apodo',),
         'S_RUNAWAY_BTN': ('nombre_o_apodo',),
+        # v3: equipo, caja y combates. Estos pasan DEX_TBL[].name (el nombre base,
+        # sin traducir) o el apodo, no dexName()
+        'S_PARTY_JOINED': ('nombre_base_o_apodo',),
+        'S_LEARN_Q': ('nombre_base_o_apodo',),
+        'S_BOX_SWAP': ('nombre_base_o_apodo',),
+        'S_BTL_BEAT': ('entrenador',),
+        'S_WIN_TRAIN_FMT': ('stat_entreno',),
     }
     CIFRAS = {'u': 5, 'd': 5, 'lu': 10}
     ESPEC = re.compile(r'%0?\d*(lu|u|d|s)')
@@ -305,12 +374,23 @@ class TestBuffersDeTexto(unittest.TestCase):
 
         cls.LANGS = fmt.LANGS
         cuerpo = re.search(r'enum\s+StrId[^{]*\{(.*?)\}', leer('i18n.h'), re.S).group(1)
+        # sin comentarios: i18n.h nombra ids en ellos ("reuses S_RELEASE_FMT /
+        # S_YES / S_NO") y descuadraban la correspondencia id -> cadena
+        cuerpo = re.sub(r'//[^\n]*', '', cuerpo)
         ids = re.findall(r'\b(S_[A-Z0-9_]+)\b', cuerpo)
         filas = fmt.extract_table(leer('i18n.cpp'), 'STRINGS', len(cls.LANGS))
-        cls.LIT = {sid: [fila[k] for fila in filas] for k, sid in enumerate(ids)}
+        cls.IDS, cls.FILAS = ids, filas
+        # una fila corta deja huecos a NULL en el firmware: aqui quedan a None y
+        # test_cada_idioma_tiene_todas_las_cadenas lo informa (antes reventaba
+        # el setUpClass con un IndexError y no se veia ningun otro resultado)
+        cls.LIT = {sid: [fila[k] if k < len(fila) else None for fila in filas]
+                   for k, sid in enumerate(ids)}
         cls.ino = leer('TamaPoke.ino').splitlines()
         cls.APODO = int(re.search(r'char\s+nick\[(\d+)\]', leer('pet.h')).group(1)) - 1
         base = max(len(row[2].encode()) for row in DEX)
+        cls.BASE = base
+        cls.ENTRENADOR = max(len(n.encode()) for n in
+                             re.findall(r'\{\s*"([^"]+)"', leer('trainers.h')))
         cls.NOMBRE = {}
         for lang in cls.LANGS:
             propios = [n[lang.lower()] for n in LOCAL_NAMES.values() if lang.lower() in n]
@@ -332,8 +412,19 @@ class TestBuffersDeTexto(unittest.TestCase):
             n += 1
         return n
 
+    def test_cada_idioma_tiene_todas_las_cadenas(self):
+        for lang, fila in zip(self.LANGS, self.FILAS):
+            with self.subTest(idioma=lang):
+                faltan = self.IDS[len(fila):]
+                self.assertEqual(len(fila), len(self.IDS),
+                                 f'STRINGS[{lang}] tiene {len(fila)} cadenas de {len(self.IDS)}: '
+                                 f'T() devuelve NULL para {faltan[0] if faltan else "?"}..'
+                                 f'{faltan[-1] if faltan else "?"}')
+
     def peor_caso(self, sid, li):
         lang, lit = self.LANGS[li], self.LIT[sid][li]
+        if lit is None:
+            self.skipTest(f'{sid} no existe en {lang} (lo informa test_cada_idioma_tiene_todas_las_cadenas)')
         total = self.bytes_literal(lit) + 1  # + terminador
         pendientes = list(self.ARGS_S.get(sid, ()))
         for m in self.ESPEC.finditer(lit):
@@ -349,6 +440,13 @@ class TestBuffersDeTexto(unittest.TestCase):
                 total += self.NOMBRE[lang]
             elif arg == 'nombre_o_apodo':
                 total += max(self.NOMBRE[lang], self.APODO)
+            elif arg == 'nombre_base_o_apodo':
+                total += max(self.BASE, self.APODO)
+            elif arg == 'entrenador':
+                total += self.ENTRENADOR
+            elif arg == 'stat_entreno':
+                total += max(self.bytes_literal(self.LIT[b][li]) for b in
+                             ('S_TR_ATK', 'S_TR_DEF', 'S_TR_SPE'))
             elif arg == 'baya':
                 total += max(self.bytes_literal(self.LIT[b][li]) for b in
                              ('S_BERRY_UNK', 'S_BERRY_RED', 'S_BERRY_BLUE', 'S_BERRY_GREEN'))

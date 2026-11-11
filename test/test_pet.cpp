@@ -85,12 +85,14 @@ TEST(egg, tres_toques_eclosionan) {
   CHECK_EQ(p.speciesId, (int16_t)4);
 }
 
-TEST(egg, eclosionar_sortea_genes_y_resetea_al_individuo) {
+// v3: los genes 90-110% pasaron a ser IV 8-31 (ver Pet::rollIV)
+TEST(egg, eclosionar_sortea_ivs_y_resetea_al_individuo) {
   Pet p;
   makePet(p, 4);
-  CHECK_RANGE(p.geneAtk, 90, 110);
-  CHECK_RANGE(p.geneDef, 90, 110);
-  CHECK_RANGE(p.geneSpe, 90, 110);
+  CHECK_RANGE(p.ivAtk, 8, 31);
+  CHECK_RANGE(p.ivDef, 8, 31);
+  CHECK_RANGE(p.ivSpe, 8, 31);
+  CHECK_RANGE(p.ivHp, 8, 31);
   CHECK_EQ(p.trAtk, (uint8_t)0);
   CHECK_EQ(p.trDef, (uint8_t)0);
   CHECK_EQ(p.trSpe, (uint8_t)0);
@@ -252,7 +254,9 @@ TEST(tick, descuido_enfria_el_vinculo_sin_arrasarlo) {
   CHECK_MSG(p.bond == 1, "el vinculo no cae por debajo de 1");
 }
 
-TEST(tick, buen_cuidado_12h_forja_defensa) {
+// v3: cada hora (DEF_TRAIN_TICKS) de bienestar da +1 DEF y ACUMULA: un
+// descuido cuesta los minutos malos, no todo el progreso (ver Pet::defTick)
+TEST(tick, cada_hora_de_buen_cuidado_forja_defensa) {
   Pet p;
   makePet(p, 4);
   CHECK_EQ(p.trDef, (uint8_t)0);
@@ -260,7 +264,19 @@ TEST(tick, buen_cuidado_12h_forja_defensa) {
     setStats(p, 100, 100, 100, 100);
     advance(p, 1);
   }
-  CHECK_EQ(p.trDef, (uint8_t)1);
+  CHECK_EQ(p.trDef, (uint8_t)(720 / DEF_TRAIN_TICKS));
+}
+
+TEST(tick, un_desliz_no_borra_la_defensa_acumulada) {
+  Pet p;
+  makePet(p, 4);
+  for (int m = 0; m < DEF_TRAIN_TICKS - 1; m++) { setStats(p, 100, 100, 100, 100); advance(p, 1); }
+  setStats(p, 20, 100, 100, 100);  // un minuto por debajo de 40: no cuenta, no resetea
+  advance(p, 1);
+  CHECK_EQ(p.trDef, (uint8_t)0);
+  setStats(p, 100, 100, 100, 100);
+  advance(p, 1);
+  CHECK_MSG(p.trDef == 1, "el minuto 60 de bienestar llega aunque hubo un desliz");
 }
 
 // ---------------------------------------------------------------- niveles
@@ -276,15 +292,32 @@ TEST(level, un_nivel_por_hora_de_juego) {
   CHECK_EQ(p.level(), (uint8_t)25);
 }
 
-// Arreglado en v1.8: level() era uint8_t y daba la vuelta a 0 a los ~10,6 dias
+// Arreglado en v1.8: level() era uint8_t y daba la vuelta a 0 a los ~10,6 dias.
+// v3 lo capa en MAX_LEVEL (100): sigue sin poder dar la vuelta.
 TEST(level, no_desborda_con_mascotas_longevas) {
   Pet p;
   makePet(p, 4);
-  p.ageMinutes = 254 * 60;
-  uint8_t before = p.level();
-  CHECK_EQ(before, (uint8_t)255);
-  p.ageMinutes = 255 * 60;  // nivel 256 -> deberia seguir subiendo (o saturar)
-  CHECK_MSG(p.level() >= before, "el nivel nunca deberia bajar al envejecer");
+  p.ageMinutes = (MAX_LEVEL - 1) * 60;
+  CHECK_EQ(p.level(), (uint8_t)MAX_LEVEL);
+  uint8_t prev = 0;
+  // hasta mas alla de las 2 semanas offline (nivel 337 sin tope) y del uint8_t
+  for (uint32_t m = 0; m <= 400u * 60; m += 30) {
+    p.ageMinutes = m;
+    uint8_t l = p.level();
+    CHECK_MSG(l >= prev, "el nivel nunca deberia bajar al envejecer");
+    CHECK_MSG(l <= MAX_LEVEL, "el nivel nunca pasa del tope");
+    prev = l;
+  }
+  p.ageMinutes = 0xFFFFFFFFu;
+  CHECK_EQ(p.level(), (uint8_t)MAX_LEVEL);
+}
+
+TEST(level, dos_semanas_offline_no_dan_la_vuelta) {
+  Pet p;
+  makePet(p, 4);
+  p.setClock(1000u * 86400);
+  p.syncClock(1000u * 86400 + 30u * 86400);  // tope de 14 dias = nivel 337 sin cap
+  CHECK_EQ(p.level(), (uint8_t)MAX_LEVEL);
 }
 
 // ---------------------------------------------------------------- evolucion
@@ -360,17 +393,30 @@ TEST(evolve, forma_final_no_evoluciona) {
   CHECK_EQ(p.speciesId, (int16_t)6);
 }
 
-TEST(evolve, eevee_se_ramifica_en_134_136) {
-  for (int seed = 1; seed <= 12; seed++) {
+static bool isEeveeBranch(int16_t d) {
+  for (int i = 0; i < EEVEE_EVO_COUNT; i++)
+    if (EEVEE_EVOS[i] == d) return true;
+  return false;
+}
+
+// v3: las 8 ramas de EEVEE_EVOS (antes 134-136)
+TEST(evolve, eevee_se_ramifica_en_sus_evoluciones) {
+  bool seen[EEVEE_EVO_COUNT] = { false };
+  for (int seed = 1; seed <= 40; seed++) {
     randomSeed(seed);
     Pet p;
     makePet(p, DEX_EEVEE);
     p.ageMinutes = 40 * 60;
     CHECK(p.canEvolveNow());
     p.evolve();
-    CHECK_RANGE(p.speciesId, (int16_t)134, (int16_t)136);
+    CHECK_MSG(isEeveeBranch(p.speciesId), "Eevee evoluciona a una de EEVEE_EVOS");
     CHECK(p.isRegistered(p.speciesId));
+    for (int i = 0; i < EEVEE_EVO_COUNT; i++)
+      if (EEVEE_EVOS[i] == p.speciesId) seen[i] = true;
   }
+  int n = 0;
+  for (int i = 0; i < EEVEE_EVO_COUNT; i++) n += seen[i];
+  CHECK_MSG(n >= 4, "el sorteo reparte entre las ramas, no se queda en 134");
 }
 
 TEST(evolve, boton_de_evolucion_se_pospone_al_declinar) {
@@ -386,20 +432,25 @@ TEST(evolve, boton_de_evolucion_se_pospone_al_declinar) {
 }
 
 // ---------------------------------------------------------------- stats
-TEST(stats, formula_base_por_genes_mas_nivel_y_entreno) {
+// v3: base + nivel + IV x nivel / 100 + entrenamiento (antes base x gen%)
+TEST(stats, formula_base_mas_nivel_iv_y_entreno) {
   Pet p;
-  makePet(p, 4);  // CHARMANDER: atk 52, def 43, spe 65
-  p.geneAtk = p.geneDef = p.geneSpe = 100;
+  makePet(p, 4);  // CHARMANDER: atk 52, def 43, spe 65, hp 39
+  CHECK_EQ(DEX_TBL[4].bAtk, (uint8_t)52);
+  p.ivAtk = p.ivDef = p.ivSpe = p.ivHp = 0;
   p.trAtk = p.trDef = p.trSpe = 0;
   p.ageMinutes = 0;  // nivel 1
   CHECK_EQ(p.atkStat(), (uint16_t)(52 + 1));
   CHECK_EQ(p.defStat(), (uint16_t)(43 + 1));
   CHECK_EQ(p.speStat(), (uint16_t)(65 + 1));
+  CHECK_EQ(p.vitStat(), (uint16_t)(39 + 1 + 10));
   p.ageMinutes = 9 * 60;  // nivel 10
   p.trAtk = 20;
   CHECK_EQ(p.atkStat(), (uint16_t)(52 + 10 + 20));
-  p.geneAtk = 110;
-  CHECK_EQ(p.atkStat(), (uint16_t)(52 * 110 / 100 + 10 + 20));
+  p.ivAtk = 31;
+  CHECK_EQ(p.atkStat(), (uint16_t)(52 + 10 + 31 * 10 / 100 + 20));
+  p.ageMinutes = 99 * 60;  // nivel 100: un IV perfecto vale +31
+  CHECK_EQ(p.atkStat(), (uint16_t)(52 + 100 + 31 + 20));
 }
 
 TEST(stats, el_huevo_no_tiene_stats) {
@@ -453,13 +504,16 @@ TEST(train, el_saco_cansa_y_quema_peso) {
   CHECK_EQ(p.energy, (uint8_t)3);
 }
 
-TEST(play, minijuego_entrena_velocidad_y_guarda_record) {
+// v3: el minijuego de la pelota entrena DEF (score/2, tope 18); la velocidad
+// tiene su propio test de reflejos (trainSpeed)
+TEST(play, minijuego_entrena_defensa_y_guarda_record) {
   Pet p;
   makePet(p, 4);
   p.joy = 10;
   p.weight = 50;
-  p.playResult(20);
-  CHECK_EQ(p.trSpe, (uint8_t)4);
+  CHECK_EQ(p.playResult(20), (uint8_t)10);
+  CHECK_EQ(p.trDef, (uint8_t)10);
+  CHECK_EQ(p.trSpe, (uint8_t)0);
   CHECK_EQ(p.joy, (uint8_t)45);   // +5 +30 por marcar mas de 15
   CHECK_EQ(p.weight, (uint8_t)10);  // 50 - 20*2
   CHECK_EQ(p.gameHi, (uint16_t)20);
@@ -522,16 +576,16 @@ TEST(mood, refleja_el_estado) {
 }
 
 // ---------------------------------------------------------------- pokedex
-TEST(dexreg, bitmap_cubre_1_a_151) {
+TEST(dexreg, bitmap_cubre_toda_la_pokedex) {
   Pet p;
   makePet(p, 4);
   memset(p.dexReg, 0, sizeof(p.dexReg));
   CHECK_EQ(p.registeredCount(), (uint16_t)0);
-  for (int16_t d = 1; d <= 151; d++) {
+  for (int16_t d = 1; d <= DEX_COUNT; d++) {
     p.dexReg[(d - 1) >> 3] |= (uint8_t)(1 << ((d - 1) & 7));
     CHECK(p.isRegistered(d));
   }
-  CHECK_EQ(p.registeredCount(), (uint16_t)151);
+  CHECK_EQ(p.registeredCount(), (uint16_t)DEX_COUNT);
 }
 
 TEST(dexreg, fuera_de_rango_no_esta_registrado) {
@@ -540,9 +594,9 @@ TEST(dexreg, fuera_de_rango_no_esta_registrado) {
   memset(p.dexReg, 0xFF, sizeof(p.dexReg));
   CHECK(!p.isRegistered(0));
   CHECK(!p.isRegistered(-1));
-  CHECK(!p.isRegistered(152));
+  CHECK(!p.isRegistered(DEX_COUNT + 1));
   CHECK(!p.isRegistered(32767));
-  CHECK_EQ(p.registeredCount(), (uint16_t)151);
+  CHECK_EQ(p.registeredCount(), (uint16_t)DEX_COUNT);
 }
 
 TEST(dexreg, linea_incompleta_se_detecta) {
@@ -554,12 +608,17 @@ TEST(dexreg, linea_incompleta_se_detecta) {
   CHECK_MSG(!p.lineHasUnregistered(1), "linea 1-2-3 completa");
 }
 
-TEST(dexreg, la_rama_de_eevee_cuenta_las_tres) {
+TEST(dexreg, la_rama_de_eevee_cuenta_todas) {
   Pet p;
   makePet(p, DEX_EEVEE);
   CHECK(p.lineHasUnregistered(DEX_EEVEE));
   for (int16_t d = 134; d <= 136; d++)
     p.dexReg[(d - 1) >> 3] |= (uint8_t)(1 << ((d - 1) & 7));
+  CHECK_MSG(p.lineHasUnregistered(DEX_EEVEE), "las 3 de gen 1 ya no completan la linea");
+  for (int i = 0; i < EEVEE_EVO_COUNT; i++) {
+    int16_t d = EEVEE_EVOS[i];
+    p.dexReg[(d - 1) >> 3] |= (uint8_t)(1 << ((d - 1) & 7));
+  }
   CHECK(!p.lineHasUnregistered(DEX_EEVEE));
 }
 
@@ -569,22 +628,27 @@ TEST(egg, el_sorteo_siempre_da_una_especie_valida) {
   for (int i = 0; i < 400; i++) {
     randomSeed(i * 7919 + 1);
     int16_t d = p.pickEggSpecies();
-    CHECK_RANGE(d, (int16_t)1, (int16_t)151);
+    CHECK_RANGE(d, (int16_t)1, (int16_t)DEX_COUNT);
     CHECK_MSG(DEX_TBL[d].rarity != R_EVO, "de un huevo nunca sale una forma evolucionada");
   }
 }
 
-TEST(egg, el_primer_huevo_es_un_inicial_clasico) {
-  for (int seed = 1; seed <= 20; seed++) {
-    randomSeed(seed);
-    mockNvsReset();
-    Pet p;
-    p.begin();
-    int16_t d = p.pickEggSpecies();
-    bool classic = false;
-    for (int i = 0; i < NUM_CLASSIC_DEX; i++)
-      if (CLASSIC_DEX[i] == d) classic = true;
-    CHECK_MSG(classic, "sin pokedex, solo salen iniciales clasicos");
+// v3: el primer huevo sale de los iniciales de la region elegida (por defecto
+// REGION_ALL, que junta los de todas las regiones)
+TEST(egg, el_primer_huevo_es_un_inicial_de_la_region) {
+  for (int r = 0; r < REGION_COUNT; r++) {
+    for (int seed = 1; seed <= 20; seed++) {
+      randomSeed(seed);
+      mockNvsReset();
+      Pet p;
+      p.begin();
+      p.region = (uint8_t)r;
+      int16_t d = p.pickEggSpecies();
+      bool starter = false;
+      for (int i = 0; i < REGIONS[r].starterCount; i++)
+        if (REGIONS[r].starters[i] == d) starter = true;
+      CHECK_MSG(starter, std::string("sin pokedex, solo salen iniciales de ") + REGIONS[r].name);
+    }
   }
 }
 
@@ -856,7 +920,7 @@ TEST(offline, el_huevo_eclosiona_en_tu_ausencia) {
   p.setClock(1000u * 86400);
   p.syncClock(1000u * 86400 + 600);  // 10 minutos
   CHECK(!p.isEgg());
-  CHECK_RANGE(p.speciesId, (int16_t)1, (int16_t)151);
+  CHECK_RANGE(p.speciesId, (int16_t)1, (int16_t)DEX_COUNT);
 }
 
 TEST(offline, durmiendo_se_descansa_tambien_apagado) {

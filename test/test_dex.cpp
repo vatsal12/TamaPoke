@@ -11,10 +11,12 @@
 
 static const int N = DEX_COUNT;
 
-TEST(dex, la_tabla_tiene_152_entradas) {
+TEST(dex, la_tabla_tiene_DEX_COUNT_mas_1_entradas) {
   CHECK_EQ((int)(sizeof(DEX_TBL) / sizeof(DEX_TBL[0])), N + 1);
   CHECK_EQ((int)(sizeof(DEX_NAME_FR) / sizeof(DEX_NAME_FR[0])), N + 1);
   CHECK_EQ((int)(sizeof(DEX_NAME_DE) / sizeof(DEX_NAME_DE[0])), N + 1);
+  CHECK_EQ((int)(sizeof(DEX_NAME_JA) / sizeof(DEX_NAME_JA[0])), N + 1);
+  CHECK_EQ((int)(sizeof(DEX_NAME_KO) / sizeof(DEX_NAME_KO[0])), N + 1);
 }
 
 TEST(dex, todos_los_nombres_son_ascii_en_mayusculas) {
@@ -62,7 +64,8 @@ TEST(dex, ningun_nombre_desborda_la_cabecera) {
 
 TEST(dex, las_evoluciones_apuntan_a_entradas_validas) {
   for (int d = 1; d <= N; d++) {
-    uint8_t to = DEX_TBL[d].evolvesTo;
+    // uint16_t: con gen 2+ evolvesTo pasa de 255 (en uint8_t se truncaba)
+    uint16_t to = DEX_TBL[d].evolvesTo;
     CHECK_MSG(to <= N, std::string("evolvesTo fuera de rango en ") + DEX_TBL[d].name);
     CHECK_MSG(to != d, std::string("se evoluciona a si mismo: ") + DEX_TBL[d].name);
   }
@@ -91,11 +94,32 @@ TEST(dex, ninguna_cadena_evolutiva_hace_bucle) {
   }
 }
 
+// v3: las evoluciones por objeto/intercambio/amistad de gen 2+ llevan un nivel
+// fijo (30/40) en tools/dex_data.py, que puede quedar por debajo del paso
+// anterior de la cadena (p.ej. AZURILL 25 -> MARILL 18). Son esas y solo esas;
+// cualquier otra cadena con niveles que no suben es un error de datos.
+static bool itemEvoException(int d) {
+  static const int16_t EXC[] = {
+    82,   // MAGNETON -> MAGNEZONE (lugar especial)
+    112,  // RHYDON -> RHYPERIOR (intercambio con protector)
+    233,  // PORYGON2 -> PORYGON-Z (intercambio con disco extrano)
+    221,  // PILOSWINE -> MAMOSWINE (aprende poder pasado)
+    183,  // MARILL (tras AZURILL, bebe de gen 3)
+    113,  // CHANSEY (tras HAPPINY, bebe de gen 4)
+    603,  // EELEKTRIK -> EELEKTROSS (piedra trueno)
+    608,  // LAMPENT -> CHANDELURE (piedra noche)
+    680,  // DOUBLADE -> AEGISLASH (piedra noche)
+  };
+  for (size_t i = 0; i < sizeof(EXC) / sizeof(EXC[0]); i++)
+    if (EXC[i] == d) return true;
+  return false;
+}
+
 TEST(dex, los_niveles_de_evolucion_suben_a_lo_largo_de_la_cadena) {
   for (int d = 1; d <= N; d++) {
     int cur = d, prev = 0, guard = 0;
     while (DEX_TBL[cur].evolvesTo != 0 && guard++ < 6) {
-      CHECK_MSG(DEX_TBL[cur].evolveLevel > prev,
+      CHECK_MSG(DEX_TBL[cur].evolveLevel > prev || itemEvoException(cur),
                 std::string("nivel de evolucion no creciente en ") + DEX_TBL[cur].name);
       prev = DEX_TBL[cur].evolveLevel;
       cur = DEX_TBL[cur].evolvesTo;
@@ -113,7 +137,7 @@ TEST(dex, toda_especie_es_alcanzable) {
     while (cur >= 1 && cur <= N && guard++ < 6) {
       reach[cur] = true;
       if (cur == DEX_EEVEE) {  // rama especial del codigo del juego
-        reach[134] = reach[135] = reach[136] = true;
+        for (int i = 0; i < EEVEE_EVO_COUNT; i++) reach[EEVEE_EVOS[i]] = true;
         break;
       }
       if (DEX_TBL[cur].evolvesTo == 0) break;
@@ -153,20 +177,48 @@ TEST(dex, las_stats_base_son_plausibles) {
 
 TEST(dex, la_rama_de_eevee_cuadra_con_el_codigo) {
   CHECK_EQ((int)DEX_TBL[DEX_EEVEE].rarity, (int)R_COMUN);
-  CHECK_RANGE((int)DEX_TBL[DEX_EEVEE].evolvesTo, 134, 136);
-  for (int d = 134; d <= 136; d++) {
+  bool tableTargetIsBranch = false;
+  for (int i = 0; i < EEVEE_EVO_COUNT; i++) {
+    int d = EEVEE_EVOS[i];
+    CHECK_RANGE(d, 1, N);
+    if (d < 1 || d > N) continue;
     CHECK_EQ((int)DEX_TBL[d].rarity, (int)R_EVO);
     CHECK_EQ((int)DEX_TBL[d].evolvesTo, 0);
+    if (d == DEX_TBL[DEX_EEVEE].evolvesTo) tableTargetIsBranch = true;
   }
+  CHECK_MSG(tableTargetIsBranch, "el evolvesTo de la tabla es una de las ramas");
+}
+
+// v3: iniciales por region. PIKACHU es inicial (Amarillo) aunque con PICHU en la
+// Pokedex sea R_EVO: es la unica forma evolucionada permitida como inicial.
+static void checkStarter(int16_t d, int lo, int hi) {
+  CHECK_RANGE(d, (int16_t)lo, (int16_t)hi);
+  if (d < 1 || d > N) return;
+  CHECK_MSG(DEX_TBL[d].rarity != R_EVO || d == 25,
+            std::string("un inicial no puede ser una forma evolucionada: ") + DEX_TBL[d].name);
 }
 
 TEST(dex, los_iniciales_clasicos_son_validos) {
   CHECK_EQ((int)(sizeof(CLASSIC_DEX) / sizeof(CLASSIC_DEX[0])), NUM_CLASSIC_DEX);
-  for (int i = 0; i < NUM_CLASSIC_DEX; i++) {
-    int16_t d = CLASSIC_DEX[i];
-    CHECK_RANGE(d, (int16_t)1, (int16_t)151);
-    CHECK_MSG(DEX_TBL[d].rarity != R_EVO, "un inicial no puede ser una forma evolucionada");
+  for (int i = 0; i < NUM_CLASSIC_DEX; i++) checkStarter(CLASSIC_DEX[i], 1, 151);
+  for (int r = 0; r < REGION_COUNT; r++) {
+    CHECK_MSG(REGIONS[r].starterCount > 0, std::string("region sin iniciales: ") + REGIONS[r].name);
+    for (int i = 0; i < REGIONS[r].starterCount; i++)
+      checkStarter(REGIONS[r].starters[i], REGIONS[r].lo, REGIONS[r].hi);
   }
+}
+
+// las regiones cubren la Pokedex una sola vez (REGION_ALL es la union)
+TEST(dex, las_regiones_cubren_la_pokedex_sin_solaparse) {
+  int owner[DEX_COUNT + 1] = { 0 };
+  for (int r = 0; r < REGION_COUNT; r++) {
+    if (r == REGION_ALL) continue;
+    for (int d = REGIONS[r].lo; d <= REGIONS[r].hi && d <= N; d++) owner[d]++;
+  }
+  for (int d = 1; d <= N; d++)
+    CHECK_MSG(owner[d] == 1, std::string("region mal cubierta en ") + DEX_TBL[d].name);
+  CHECK_EQ((int)REGIONS[REGION_ALL].lo, 1);
+  CHECK_EQ((int)REGIONS[REGION_ALL].hi, N);
 }
 
 TEST(dex, hay_al_menos_una_especie_de_cada_rareza) {
@@ -176,14 +228,22 @@ TEST(dex, hay_al_menos_una_especie_de_cada_rareza) {
     CHECK_MSG(count[r] > 0, "hay una rareza sin especies: el sorteo del huevo se quedaria sin candidatos");
 }
 
-// pickEggSpecies mete los candidatos de un tier en un array de 80: si algun
-// tier tuviera mas, se sortearia solo entre los 80 primeros
+// pickEggSpecies mete los candidatos de un tier de UNA region en un array de
+// CAND_MAX (pet.cpp, hoy 260): si algun tier tuviera mas, se sortearia solo
+// entre los primeros y el final de la Pokedex no saldria nunca de un huevo.
+// REGION_ALL es el caso grande. Si cambia CAND_MAX en pet.cpp, cambialo aqui.
+#define TEST_CAND_MAX 260
 TEST(dex, ningun_tier_desborda_el_array_de_candidatos) {
-  for (int r = R_COMUN; r <= R_LEGENDARIO; r++) {
-    int n = 0;
-    for (int d = 1; d <= N; d++)
-      if (DEX_TBL[d].rarity == r) n++;
-    CHECK_MSG(n <= 80, "mas de 80 candidatos en un tier: pickEggSpecies los recorta");
+  for (int rg = 0; rg < REGION_COUNT; rg++) {
+    for (int r = R_COMUN; r <= R_LEGENDARIO; r++) {
+      int n = 0;
+      for (int d = REGIONS[rg].lo; d <= REGIONS[rg].hi && d <= N; d++)
+        if (DEX_TBL[d].rarity == r) n++;
+      char msg[96];
+      snprintf(msg, sizeof(msg), "%s tier %d: %d candidatos > %d, pickEggSpecies los recorta",
+               REGIONS[rg].name, r, n, TEST_CAND_MAX);
+      CHECK_MSG(n <= TEST_CAND_MAX, msg);
+    }
   }
 }
 
@@ -208,7 +268,7 @@ TEST(dex, dexName_fuera_de_rango_no_revienta) {
     gLang = (Lang)lang;
     CHECK_STREQ(dexName(0), DEX_TBL[0].name);
     CHECK_STREQ(dexName(-1), DEX_TBL[0].name);
-    CHECK_STREQ(dexName(152), DEX_TBL[0].name);
+    CHECK_STREQ(dexName(DEX_COUNT + 1), DEX_TBL[0].name);
     CHECK_STREQ(dexName(30000), DEX_TBL[0].name);
   }
   gLang = LANG_DEFAULT;

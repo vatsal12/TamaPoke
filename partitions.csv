@@ -1,0 +1,14 @@
+# TamaPoke: tabla de particiones propia (16 MB, vale para la 1.75 y la 1.75C).
+# nvs se queda EXACTAMENTE donde estaba en app3M_fat9M_16MB (0x9000, 20 KB):
+# ahi vive la partida, y moverla la perderia al actualizar.
+# "sprites" guarda el paquete TPKZ de la 1.75C (tools/pack_flash.py); en la 1.75
+# los sprites van en la microSD y esta particion queda vacia.
+# "tamabox" es un NVS aparte solo para la caja (~100 bichos): en el nvs de la
+# partida no caben sin dejarlo casi lleno, y un NVS lleno deja de guardar.
+# Name,    Type, SubType,  Offset,   Size,     Flags
+nvs,       data, nvs,      0x9000,   0x5000,
+otadata,   data, ota,      0xe000,   0x2000,
+app0,      app,  ota_0,    0x10000,  0x400000,
+tamabox,   data, nvs,      0x410000, 0x10000,
+sprites,   data, 0x40,     0x420000, 0xBD0000,
+coredump,  data, coredump, 0xFF0000, 0x10000,

@@ -39,7 +39,7 @@ jobs:
       - name: Compile
         run: >
           arduino-cli compile --warnings=all
-          --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB"
+          --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,PartitionScheme=custom"
           --build-property "compiler.cpp.extra_flags=${{ matrix.flags }}"
           .
 
