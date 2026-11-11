@@ -40,10 +40,11 @@
 #include "power.h"
 #include "wifitime.h"
 #include <nvs_flash.h>
+#include <Preferences.h>
 
 // Version del firmware. Subir este numero en cada release (y manifest.json para
 // el instalador web). Se muestra en la pantalla de ajustes y por serie al arrancar.
-#define FW_VERSION "3.12"
+#define FW_VERSION "3.13"
 
 // "now is still before deadline", safe across the millis() wrap at ~49.7 days
 // (a plain now < deadline flips the moment the counter wraps). Same idea as
@@ -111,6 +112,7 @@ int galleryPage = 0;        // GAL_PAGES paginas de GAL_PER_PAGE
 int16_t galleryDetail = 0;  // dex en vista detalle, 0 = rejilla
 
 bool screenOff = false;       // pulsacion corta del boton PWR
+uint8_t userDim = 0;          // nivel de brillo de ajustes (power.h): 0 alto, 1 medio, 2 bajo
 bool cardOpen = false;        // ficha del bicho (deslizar vertical)
 bool kbOpen = false;
 enum : uint8_t { KB_PET = 0, KB_TRAINER };
@@ -691,6 +693,12 @@ void setup() {
   // QSPI a 80MHz (por defecto 40): el flush del framebuffer es el cuello de
   // botella del fps (~56ms a 40MHz). Si el panel mostrara basura, bajar a 40M.
   if (!gfx->begin(80000000)) Serial.println("gfx->begin() fallo");
+  {  // nivel de brillo guardado (ajustes)
+    Preferences p;
+    p.begin("tamapoke", true);
+    userDim = p.getUChar("bri", 0) % BRIGHT_LEVELS;
+    p.end();
+  }
   panel->setBrightness(180);
   applyLangFont();  // fuente del idioma guardado (clasica salvo CJK)
 
@@ -923,6 +931,7 @@ PowerCtx powerCtx(uint32_t now) {
   c.usb = usbPresent();
   c.charging = batCharging();
   c.batPct = batPercent();
+  c.userDim = userDim;
   return c;
 }
 
@@ -2484,6 +2493,7 @@ static uint32_t screenKey() {
     h = mixKey(h, clockH * 60 + clockM);
     h = mixKey(h, audioEnabled());
     h = mixKey(h, audioVolume());
+    h = mixKey(h, userDim);
     h = mixKey(h, gLang);
   } else if (cardOpen) {
     for (uint32_t v : { (uint32_t)pet.speciesId, (uint32_t)pet.shiny, (uint32_t)pet.ageMinutes, (uint32_t)pet.streak,
@@ -3248,6 +3258,14 @@ void drawClockBtn(int x, int y, const char *l) {
 #define VOL_MINUS_X 146
 #define VOL_PLUS_X 276
 #define VOL_BTN_W 48
+// brillo (upstream v1.19): en la fila del OK, a su izquierda -- la fila de las
+// pildoras ya la ocupan sonido, volumen e idioma
+#define BRI_PILL_X 72           // pildora de brillo (cicla los niveles al tocar)
+#define BRI_PILL_W 110
+#define BRI_PILL_Y 340
+#define BRI_PILL_H 48
+#define CLK_OK_X 194            // el OK se desplaza a la derecha para dejarle sitio
+#define CLK_OK_W 200
 static const char *const LANG_CODES[LANG_COUNT] = { "ES", "EN", "FR", "DE", "IT", "PT", "JA", "KO" };
 
 void renderClock() {
@@ -3311,6 +3329,25 @@ void renderClock() {
     if (v) gfx->fillRoundRect(210, LANG_PILL_Y + 18, 56 * v / 10, 8, 3, UI_BAR_OK);
   }
 
+  // nivel de brillo (fila del OK, a la izquierda): un sol y tres barras, las encendidas son el nivel
+  gfx->fillRoundRect(BRI_PILL_X, BRI_PILL_Y, BRI_PILL_W, BRI_PILL_H, 8, UI_WHITE);
+  gfx->drawRoundRect(BRI_PILL_X, BRI_PILL_Y, BRI_PILL_W, BRI_PILL_H, 8, UI_INK);
+  {
+    int sx = BRI_PILL_X + 26, sy = BRI_PILL_Y + BRI_PILL_H / 2;
+    gfx->fillCircle(sx, sy, 5, UI_INK);
+    static const int8_t RAY[8][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1} };
+    for (int i = 0; i < 8; i++) {
+      int k = i < 4 ? 8 : 6, e = i < 4 ? 11 : 9;  // las diagonales algo mas cortas
+      gfx->drawLine(sx + RAY[i][0] * k, sy + RAY[i][1] * k, sx + RAY[i][0] * e, sy + RAY[i][1] * e, UI_INK);
+    }
+    int lit = BRIGHT_LEVELS - userDim;
+    for (int i = 0; i < BRIGHT_LEVELS; i++) {
+      int bh = 8 + i * 5, bx = BRI_PILL_X + 52 + i * 14, by = BRI_PILL_Y + BRI_PILL_H - 6 - bh;
+      if (i < lit) gfx->fillRect(bx, by, 9, bh, UI_BAR_OK);
+      gfx->drawRect(bx, by, 9, bh, UI_INK);
+    }
+  }
+
   // selector de idioma: una pildora que cicla los 6 idiomas al tocar
   gfx->fillRoundRect(LANG_PILL_X, LANG_PILL_Y, LANG_PILL_W, LANG_PILL_H, 8, UI_WHITE);
   gfx->drawRoundRect(LANG_PILL_X, LANG_PILL_Y, LANG_PILL_W, LANG_PILL_H, 8, UI_INK);
@@ -3321,10 +3358,10 @@ void renderClock() {
   setCur(LANG_PILL_X + (LANG_PILL_W - textW(lp, 2)) / 2, LANG_PILL_Y + 8);
   printT(lp);
 
-  gfx->fillRoundRect(133, 340, 200, 48, 14, UI_BAR_OK);
+  gfx->fillRoundRect(CLK_OK_X, 340, CLK_OK_W, 48, 14, UI_BAR_OK);
   gfx->setTextColor(UI_BG_DAY);
   setSize(3);
-  setCur(CX - 18, 352);
+  setCur(CLK_OK_X + CLK_OK_W / 2 - 18, 352);
   printT("OK");
 
   gfx->setTextColor(UI_TRACK);
@@ -3373,7 +3410,17 @@ void clockTap(int16_t x, int16_t y) {
       return;
     }
   }
-  if (y >= 340 && y <= 388 && x >= 133 && x <= 333) { applyClock(); return; }
+  if (y >= BRI_PILL_Y && y <= BRI_PILL_Y + BRI_PILL_H &&
+      x >= BRI_PILL_X && x < BRI_PILL_X + BRI_PILL_W) {   // cicla brillo: alto, medio, bajo
+    userDim = (userDim + 1) % BRIGHT_LEVELS;
+    Preferences p;
+    p.begin("tamapoke", false);
+    p.putUChar("bri", userDim);
+    p.end();
+    sfxPlay(SFX_TAP);
+    return;
+  }
+  if (y >= 340 && y <= 388 && x >= CLK_OK_X && x <= CLK_OK_X + CLK_OK_W) { applyClock(); return; }
 }
 
 // llama + numero de racha arriba a la izquierda
