@@ -7,8 +7,17 @@ on:
 
 jobs:
   firmware:
-    name: Compile firmware
+    name: Compile firmware (${{ matrix.board }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: "1.75"
+            flags: ""
+          # 1.75C: otros pines de reset, sin RTC ni SD, sprites dentro del firmware
+          - board: "1.75C"
+            flags: "-DTAMAPOKE_BOARD_175C"
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +39,8 @@ jobs:
       - name: Compile
         run: >
           arduino-cli compile --warnings=all
-          --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB"
+          --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,PartitionScheme=custom"
+          --build-property "compiler.cpp.extra_flags=${{ matrix.flags }}"
           .
 
   generated:

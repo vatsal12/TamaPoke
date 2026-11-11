@@ -8,7 +8,10 @@
 
 class Preferences {
 public:
-  bool begin(const char *name, bool readOnly = false);
+  // partitionLabel: como en Arduino-ESP32, el namespace vive dentro de una
+  // particion NVS ("nvs" por defecto). Dos particiones son almacenes separados:
+  // el mismo namespace en "nvs" y en "tamabox" no comparte claves.
+  bool begin(const char *name, bool readOnly = false, const char *partitionLabel = nullptr);
   void end();
   bool clear();
   bool isKey(const char *key);
@@ -31,6 +34,9 @@ public:
   uint16_t getUShort(const char *k, uint16_t def = 0);
   int32_t getInt(const char *k, int32_t def = 0);
   uint32_t getUInt(const char *k, uint32_t def = 0);
+  size_t getBytesLength(const char *k);
+  // COMO EL HARDWARE: si el blob guardado es MAS LARGO que maxLen no copia
+  // nada y devuelve 0 (Arduino-ESP32: "not enough space in buffer").
   size_t getBytes(const char *k, void *buf, size_t maxLen);
   size_t getString(const char *k, char *buf, size_t maxLen);
 
@@ -40,6 +46,9 @@ private:
   bool ro_ = false;
 };
 
-// helpers de test: borra toda la "NVS" simulada
+// helpers de test: borra toda la "NVS" simulada (todas las particiones)
 void mockNvsReset();
-size_t mockNvsKeyCount(const char *ns);
+size_t mockNvsKeyCount(const char *ns, const char *partition = "nvs");
+bool mockNvsHasKey(const char *ns, const char *key, const char *partition = "nvs");
+// borra una particion entera (lo usa el shim de nvs_flash_erase_partition)
+void mockNvsErasePartition(const char *partition);

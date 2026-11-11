@@ -13,6 +13,7 @@ static const char *LANG_NAME[LANG_COUNT] = { "ES", "EN", "FR", "DE", "IT", "PT",
 // extrae la firma de los especificadores de printf de una cadena: "%lud" -> "lu"
 static std::vector<std::string> specs(const char *s) {
   std::vector<std::string> out;
+  if (!s) { out.push_back("<NULL>"); return out; }  // cadena ausente: se informa, no revienta
   const char *p = s;
   while (*p) {
     if (*p != '%') { p++; continue; }
@@ -39,7 +40,7 @@ static std::string joinSpecs(const std::vector<std::string> &v) {
 // firma esperada de cada cadena con formato, sacada de las llamadas del sketch
 struct ExpectedFmt { StrId id; const char *sig; };
 static const ExpectedFmt EXPECTED[] = {
-  { S_POKEDEX_FMT,     "%u" },
+  { S_POKEDEX_FMT,     "%u,%u" },   // v3: "POKEDEX %u/%u" (registrados, DEX_COUNT)
   { S_NAME_FMT,        "%s,%s,%u" },
   { S_RELEASE_FMT,     "%s" },
   { S_HITS_FMT,        "%u" },
@@ -57,6 +58,28 @@ static const ExpectedFmt EXPECTED[] = {
   { S_MISTAKES_FMT,    "%u" },
   { S_FAREWELL_BTN,    "%s" },
   { S_RUNAWAY_BTN,     "%s" },
+  // v3 (combates, equipo, caja, LAN): firmas sacadas de las llamadas en TamaPoke.ino
+  { S_IV_FMT,           "%u" },
+  { S_PARTY_FMT,        "%u" },
+  { S_PARTY_JOINED,     "%s" },
+  { S_MOVE_PWR,         "%u" },
+  { S_LEARN_Q,          "%s" },
+  { S_BTL_USED,         "%s,%s" },
+  { S_BTL_MISS,         "%s" },
+  { S_BTL_FAINT,        "%s" },
+  { S_BTL_STATUS,       "%s,%s" },
+  { S_BTL_SENDS,        "%s,%s" },
+  { S_BTL_GO,           "%s" },
+  { S_BADGES_FMT,       "%u" },
+  { S_SPD_GAIN_FMT,     "%u" },
+  { S_MEDALS_TOTAL_FMT, "%u" },
+  { S_PICK_FMT,         "%u,%u" },
+  { S_BTL_BEAT,         "%s" },
+  { S_VOL_FMT,          "%u" },
+  { S_BOX_FMT,          "%u,%u" },
+  { S_BOX_SWAP,         "%s" },
+  { S_LAN_VS,           "%u" },
+  { S_WIN_TRAIN_FMT,    "%s,%u" },
 };
 static const int NUM_EXPECTED = (int)(sizeof(EXPECTED) / sizeof(EXPECTED[0]));
 

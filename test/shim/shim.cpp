@@ -1,5 +1,6 @@
 #include "Arduino.h"
 #include "Preferences.h"
+#include "nvs_flash.h"
 #include "../../audio.h"
 #include <map>
 #include <vector>
@@ -62,17 +63,56 @@ void audioSetEnabled(bool on) { gAudioOn = on; }
 bool audioEnabled() { return gAudioOn; }
 
 // ---------------- Preferences en memoria ----------------
+// Un almacen por "particion:namespace". Sin partitionLabel es la particion "nvs"
+// por defecto, igual que Arduino-ESP32.
 typedef std::map<std::string, std::vector<uint8_t> > KV;
 static std::map<std::string, KV> gStore;
 
-void mockNvsReset() { gStore.clear(); }
-size_t mockNvsKeyCount(const char *ns) {
-  std::map<std::string, KV>::iterator it = gStore.find(ns);
-  return it == gStore.end() ? 0 : it->second.size();
+static std::string nsKey(const char *partition, const char *ns) {
+  return std::string(partition && *partition ? partition : "nvs") + ":" + (ns ? ns : "");
 }
 
-bool Preferences::begin(const char *name, bool readOnly) {
-  ns_ = name;
+void mockNvsReset();
+size_t mockNvsKeyCount(const char *ns, const char *partition) {
+  std::map<std::string, KV>::iterator it = gStore.find(nsKey(partition, ns));
+  return it == gStore.end() ? 0 : it->second.size();
+}
+bool mockNvsHasKey(const char *ns, const char *key, const char *partition) {
+  std::map<std::string, KV>::iterator it = gStore.find(nsKey(partition, ns));
+  return it != gStore.end() && it->second.count(key) != 0;
+}
+void mockNvsErasePartition(const char *partition) {
+  std::string prefix = std::string(partition) + ":";
+  for (std::map<std::string, KV>::iterator it = gStore.begin(); it != gStore.end(); ++it)
+    if (it->first.compare(0, prefix.size(), prefix) == 0) it->second.clear();
+}
+
+// ---------------- nvs_flash ----------------
+static esp_err_t gInitErr = ESP_OK;
+static int gInitErrTimes = 0;
+static bool gPartMissing = false;
+static int gEraseCount = 0;
+void mockNvsSetInitResult(esp_err_t err, int times) { gInitErr = err; gInitErrTimes = times; }
+void mockNvsSetPartitionMissing(bool missing) { gPartMissing = missing; }
+int mockNvsEraseCount() { return gEraseCount; }
+// todo a cero: almacen, y particion presente con init correcto
+void mockNvsReset() { gStore.clear(); gPartMissing = false; gInitErrTimes = 0; }
+esp_err_t nvs_flash_init_partition(const char *) {
+  if (gPartMissing) return ESP_ERR_NOT_FOUND;
+  if (gInitErrTimes > 0) { gInitErrTimes--; return gInitErr; }
+  return ESP_OK;
+}
+esp_err_t nvs_flash_erase_partition(const char *label) {
+  if (gPartMissing) return ESP_ERR_NOT_FOUND;
+  gEraseCount++;
+  mockNvsErasePartition(label);
+  return ESP_OK;
+}
+esp_err_t nvs_flash_init() { return nvs_flash_init_partition("nvs"); }
+
+bool Preferences::begin(const char *name, bool readOnly, const char *partitionLabel) {
+  if (gPartMissing && partitionLabel && strcmp(partitionLabel, "nvs") != 0) return false;
+  ns_ = nsKey(partitionLabel, name);
   ro_ = readOnly;
   open_ = true;
   return true;
@@ -141,14 +181,27 @@ uint16_t Preferences::getUShort(const char *k, uint16_t def){ return getScalar(g
 int32_t Preferences::getInt(const char *k, int32_t def)    { return getScalar(gStore, ns_, open_, k, def); }
 uint32_t Preferences::getUInt(const char *k, uint32_t def) { return getScalar(gStore, ns_, open_, k, def); }
 
+size_t Preferences::getBytesLength(const char *k) {
+  if (!open_) return 0;
+  KV &kv = gStore[ns_];
+  KV::iterator it = kv.find(k);
+  return it == kv.end() ? 0 : it->second.size();
+}
+
+// Igual que Arduino-ESP32 Preferences::getBytes: si el blob guardado no cabe en
+// el buffer, NO copia nada y devuelve 0 ("not enough space in buffer"). El shim
+// truncaba antes y ocultaba toda la clase de fallo que loadBlob() en pet.cpp y
+// la migracion de Party::begin() existen para evitar.
 size_t Preferences::getBytes(const char *k, void *buf, size_t maxLen) {
   if (!open_) return 0;
   KV &kv = gStore[ns_];
   KV::iterator it = kv.find(k);
   if (it == kv.end()) return 0;   // como la NVS real: deja el buffer intacto
-  size_t n = it->second.size() < maxLen ? it->second.size() : maxLen;
-  memcpy(buf, &it->second[0], n);
-  return n;
+  size_t len = it->second.size();
+  if (!len || !buf || !maxLen) return len;
+  if (len > maxLen) return 0;
+  memcpy(buf, &it->second[0], len);
+  return len;
 }
 
 size_t Preferences::getString(const char *k, char *buf, size_t maxLen) {

@@ -505,6 +505,28 @@ def icon_clean():
     return g.rows()
 
 
+def icon_train():
+    # mancuerna del submenu de entrenamiento (5o icono, TamaPoke.ino)
+    return [
+        "................",
+        "................",
+        "................",
+        ".kk..........kk.",
+        ".kNk........kNk.",
+        "kNNk........kNNk",
+        "kNNkkkkkkkkkkNNk",
+        "kNNkMMMMMMMMkNNk",
+        "kNNkMMMMMMMMkNNk",
+        "kNNkkkkkkkkkkNNk",
+        "kNNk........kNNk",
+        ".kNk........kNk.",
+        ".kk..........kk.",
+        "................",
+        "................",
+        "................",
+    ]
+
+
 SPRITES = {
     "CHARMANDER": charmander(),
     "CHARMELEON": charmeleon(),
@@ -519,6 +541,7 @@ SPRITES = {
     "ICON_PLAY": icon_play(),
     "ICON_LIGHT": icon_light(),
     "ICON_CLEAN": icon_clean(),
+    "ICON_TRAIN": icon_train(),
     "ICON_BERRY_B": icon_berry_blue(),
     "ICON_BERRY_G": icon_berry_green(),
     "ICON_CANDY": icon_candy(),
@@ -612,6 +635,9 @@ UI_COLORS = {
 }
 
 
+SPRITE_NOTES = {"ICON_TRAIN": "dumbbell (training)"}
+
+
 def emit_c(path="species.h"):
     out = []
     out.append("#pragma once\n#include <stdint.h>\n\n")
@@ -645,7 +671,9 @@ def emit_c(path="species.h"):
         out.append(f"    case '{ch}': return 0x{rgb565(hexcol):04X};  // {hexcol}\n")
     out.append("    default: return 0;\n  }\n}\n\n")
     for name, rows in SPRITES.items():
-        out.append(f"static const char* const SPR_{name}[{len(rows)}] = {{  // {len(rows)}x{len(rows)}\n")
+        note = SPRITE_NOTES.get(name)
+        out.append(f"static const char* const SPR_{name}[{len(rows)}] = {{  // {len(rows)}x{len(rows)}"
+                   + (f" -- {note}" if note else "") + "\n")
         for row in rows:
             out.append(f'  "{row}",\n')
         out.append("};\n\n")

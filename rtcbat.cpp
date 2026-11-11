@@ -3,13 +3,41 @@
 #include "pin_config.h"  // define XPOWERS_CHIP_AXP2101
 #include <Wire.h>
 #include <time.h>
-#include <SensorPCF85063.hpp>
 #include <XPowersLib.h>
 
-static SensorPCF85063 rtc;
 static XPowersPMU pmu;
-static bool rtcOk = false;
 static bool pmuOk = false;
+
+#if !TAMAPOKE_HAS_RTC
+// Placa sin RTC (1.75C): reloj por software sobre esp_timer (64 bits, no da la
+// vuelta como millis() y sigue contando durante el light sleep). Mientras la
+// placa tenga alimentacion la hora avanza; al apagar con el PMU se pierde y
+// setup() la siembra con la ultima hora guardada, igual que un PCF85063 sin pila.
+#include <esp_timer.h>
+
+static uint32_t swEpoch = 0;   // 0 = sin hora todavia
+static int64_t swEpochUs = 0;  // esp_timer_get_time() cuando se fijo swEpoch
+
+bool rtcBegin() {
+  Serial.println("placa sin RTC: reloj por software");
+  return false;
+}
+
+uint32_t rtcEpoch() {
+  if (swEpoch == 0) return 0;
+  return swEpoch + (uint32_t)((esp_timer_get_time() - swEpochUs) / 1000000);
+}
+
+void rtcSetEpoch(uint32_t e) {
+  swEpoch = e;
+  swEpochUs = esp_timer_get_time();
+}
+
+#else
+#include <SensorPCF85063.hpp>
+
+static SensorPCF85063 rtc;
+static bool rtcOk = false;
 
 bool rtcBegin() {
   rtcOk = rtc.begin(Wire, IIC_SDA, IIC_SCL);
@@ -40,6 +68,7 @@ void rtcSetEpoch(uint32_t e) {
   rtc.setDateTime(RTC_DateTime(tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
                                tmv.tm_hour, tmv.tm_min, tmv.tm_sec));
 }
+#endif  // TAMAPOKE_HAS_RTC
 
 bool batBegin() {
   pmuOk = pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
