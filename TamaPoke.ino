@@ -3163,6 +3163,23 @@ void renderGame() {
 // (sin argumento por defecto: el generador de prototipos de Arduino los
 // descarta y las llamadas que lo omitan no compilarian)
 #define IV_NONE 0xFF
+
+// x where the card's bars start: after the WIDEST label, never before 132.
+// (Restored from upstream b4649ca. A fixed x is fine for the Latin labels, which
+// are at most five characters, but the Japanese ones are wider -- こうげき ran
+// into the bar. Measured with textW() so every row lines up in any language.)
+// Needs text size 2 already set, because textW() reads the active font.
+static int statBarX() {
+  const StrId ids[] = { S_STAT_ATK, S_STAT_DEF, S_STAT_SPE, S_STAT_VIT, S_STAT_WGT, S_VIN };
+  int widest = 0;
+  for (StrId id : ids) {
+    int w = textW(T(id), 2);
+    if (w > widest) widest = w;
+  }
+  int x = 70 + widest + 2;    // a five-letter Latin label lands exactly on 132, as before
+  return x < 132 ? 132 : x;
+}
+
 void drawCardStat(int y, const char *label, uint16_t val, uint16_t maxBar,
                   uint16_t color, uint8_t iv) {
   gfx->setTextColor(UI_INK);
@@ -3173,11 +3190,12 @@ void drawCardStat(int y, const char *label, uint16_t val, uint16_t maxBar,
   // -- three characters. BOND (EN), LIEN (FR) and LACO (PT) are four, so the
   // label ran under the bar. 132 fits five, with the bar narrowed to keep the
   // number clear of it.
-  int bw = 130;
+  int bx = statBarX();
+  int bw = 262 - bx;          // the bar always ends at 262, clear of the number at 272
   int fw = (int)val * bw / maxBar;
   if (fw > bw) fw = bw;
-  gfx->fillRoundRect(132, y + 2, bw, 11, 3, UI_TRACK);
-  if (fw > 2) gfx->fillRoundRect(132, y + 2, fw, 11, 3, color);
+  gfx->fillRoundRect(bx, y + 2, bw, 11, 3, UI_TRACK);
+  if (fw > 2) gfx->fillRoundRect(bx, y + 2, fw, 11, 3, color);
   char num[8];
   snprintf(num, sizeof(num), "%u", val);
   setCur(272, y);
